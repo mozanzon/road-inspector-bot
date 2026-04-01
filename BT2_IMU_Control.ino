@@ -17,12 +17,12 @@
 //    STATUS,<yaw>,<roll>,<pitch>,<ax>,<ay>,<az>,<gx>,<gy>,<gz>,<dir>,<speed>
 //
 //  Libraries needed (install via Library Manager):
-//    FaBo9Axis_MPU9250 by FaBo
+//    MPU9250_asukiaaa by asukiaaa
 //    Wire (built-in)
 // ============================================================
 
 #include <Wire.h>
-#include <FaBo9Axis_MPU9250.h>
+#include <MPU9250_asukiaaa.h>
 
 // ── BTS7960 Pins ────────────────────────────────────────────
 const int LEFT_RPWM  = 5,  LEFT_LPWM  = 6;
@@ -35,9 +35,8 @@ const int           RAMP_STEPS = 50;
 const unsigned long RAMP_TIME  = 800;   // ms
 
 // ── IMU ─────────────────────────────────────────────────────
-FaBo9Axis_MPU9250 mpu;
+MPU9250_asukiaaa mpu;
 
-// FaBo9Axis_MPU9250 readMotion9() returns accel in [g] and gyro in [deg/s].
 // We store a gyroZ offset (deg/s) measured during calibration.
 float gyroZ_offset = 0;    // calibrated zero offset for gyroZ (deg/s)
 float yaw          = 0;    // integrated yaw in degrees
@@ -59,12 +58,20 @@ int   rotateSpeed   = 0;
 unsigned long lastStatusMs = 0;
 const unsigned long STATUS_INTERVAL = 50;  // 20Hz status reports
 
-// ── Helper: read all 6 axes via FaBo9Axis_MPU9250 ───────────
-// Fills: ax,ay,az in [g]   gx,gy,gz in [deg/s]
+// ── Helper: read all 9 axes via MPU9250_asukiaaa ───────────
+// Fills: ax,ay,az in [g]   gx,gy,gz in [deg/s]   mx,my,mz (unused)
 void readIMURaw(float &ax, float &ay, float &az,
                 float &gx, float &gy, float &gz) {
-  float mx, my, mz;   // magnetometer (unused but required by readMotion9)
-  mpu.readMotion9(&ax, &ay, &az, &gx, &gy, &gz, &mx, &my, &mz);
+  mpu.accelUpdate();
+  mpu.gyroUpdate();
+  
+  ax = mpu.accelX();
+  ay = mpu.accelY();
+  az = mpu.accelZ();
+  
+  gx = mpu.gyroX();
+  gy = mpu.gyroY();
+  gz = mpu.gyroZ();
 }
 
 // ============================================================
@@ -311,18 +318,16 @@ void setup() {
   digitalWrite(RIGHT_R_EN, HIGH); digitalWrite(RIGHT_L_EN, HIGH);
   stopMotors();
 
-  // IMU – FaBo9Axis_MPU9250
-  // mpu.begin() initialises the sensor over I2C and returns true on success.
-  // Wire.begin() is called internally by the library; no need to call it separately.
-  if (!mpu.begin()) {
-    Serial.println("IMU_ERROR: MPU-9250 not found!");
-  } else {
-    Serial.println("IMU_OK");
-    lastIMUTime = micros();
-    calibrateIMU();
-  }
-
+  // IMU – MPU9250_asukiaaa
+  Wire.begin();
+  mpu.setWire(&Wire);
+  mpu.beginAccel();
+  mpu.beginGyro();
+  mpu.beginMag();
+  
+  Serial.println("IMU_OK");
   lastIMUTime = micros();
+  calibrateIMU();
 
   Serial.println("READY");
   Serial.println("FORMAT: STATUS,yaw,roll,pitch,ax,ay,az,gx,gy,gz,dir,speed");
