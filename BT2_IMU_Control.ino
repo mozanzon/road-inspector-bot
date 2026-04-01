@@ -1,8 +1,8 @@
 // ============================================================
-//  BTS7960 Dual Motor Driver – Serial Command Control + MPU-6050
+//  BTS7960 Dual Motor Driver – Serial Command Control + MPU-9250
 //  Target : Arduino Mega
 //  Motor 1 = LEFT  | Motor 2 = RIGHT
-//  IMU    : MPU-6050 on I2C (SDA=20, SCL=21 on Mega)
+//  IMU    : MPU-9250 on I2C (SDA=20, SCL=21 on Mega)
 //
 //  Commands (received over Serial @ 115200):
 //    FORWARD <speed>       both motors forward
@@ -17,12 +17,12 @@
 //    STATUS,<yaw>,<roll>,<pitch>,<ax>,<ay>,<az>,<gx>,<gy>,<gz>,<dir>,<speed>
 //
 //  Libraries needed (install via Library Manager):
-//    MPU6050 by Electronic Cats  (or Jeff Rowberg's i2cdevlib)
+//    FaBo9Axis_MPU9250 by FaBo
 //    Wire (built-in)
 // ============================================================
 
 #include <Wire.h>
-#include <MPU6050.h>
+#include <FaBo9Axis_MPU9250.h>
 
 // ── BTS7960 Pins ────────────────────────────────────────────
 const int LEFT_RPWM  = 5,  LEFT_LPWM  = 6;
@@ -35,9 +35,11 @@ const int           RAMP_STEPS = 50;
 const unsigned long RAMP_TIME  = 800;   // ms
 
 // ── IMU ─────────────────────────────────────────────────────
-MPU6050 mpu;
+FaBo9Axis_MPU9250 mpu;
 
-float gyroZ_offset = 0;    // calibrated zero offset for gyroZ
+// FaBo9Axis_MPU9250 readMotion9() returns accel in [g] and gyro in [deg/s].
+// We store a gyroZ offset (deg/s) measured during calibration.
+float gyroZ_offset = 0;    // calibrated zero offset for gyroZ (deg/s)
 float yaw          = 0;    // integrated yaw in degrees
 float roll         = 0;
 float pitch        = 0;
@@ -57,20 +59,28 @@ int   rotateSpeed   = 0;
 unsigned long lastStatusMs = 0;
 const unsigned long STATUS_INTERVAL = 50;  // 20Hz status reports
 
+// ── Helper: read all 6 axes via FaBo9Axis_MPU9250 ───────────
+// Fills: ax,ay,az in [g]   gx,gy,gz in [deg/s]
+void readIMURaw(float &ax, float &ay, float &az,
+                float &gx, float &gy, float &gz) {
+  float mx, my, mz;   // magnetometer (unused but required by readMotion9)
+  mpu.readMotion9(&ax, &ay, &az, &gx, &gy, &gz, &mx, &my, &mz);
+}
+
 // ============================================================
 //  IMU CALIBRATION – average gyroZ at rest
 // ============================================================
 void calibrateIMU() {
   Serial.println("Calibrating IMU – keep robot still...");
-  long sum = 0;
+  double sum = 0;
   const int samples = 500;
   for (int i = 0; i < samples; i++) {
-    int16_t ax, ay, az, gx, gy, gz;
-    mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+    float ax, ay, az, gx, gy, gz;
+    readIMURaw(ax, ay, az, gx, gy, gz);
     sum += gz;
     delay(2);
   }
-  gyroZ_offset = sum / (float)samples;
+  gyroZ_offset = (float)(sum / samples);
   yaw   = 0;
   roll  = 0;
   pitch = 0;
@@ -87,27 +97,21 @@ void updateIMU() {
   lastIMUTime = now;
   if (dt <= 0 || dt > 0.5) return;  // skip bad dt
 
-  int16_t ax16, ay16, az16, gx16, gy16, gz16;
-  mpu.getMotion6(&ax16, &ay16, &az16, &gx16, &gy16, &gz16);
+  float fax, fay, faz, fgx, fgy, fgz;
+  readIMURaw(fax, fay, faz, fgx, fgy, fgz);
+  // fax/fay/faz are already in [g]; fgx/fgy/fgz already in [deg/s]
 
-  // ── Gyro → deg/s (±250°/s range: /131.0) ──────────────
-  float gz_dps = (gz16 - gyroZ_offset) / 131.0f;
-  float gx_dps = gx16 / 131.0f;
-  float gy_dps = gy16 / 131.0f;
-
-  // ── Accel → g ──────────────────────────────────────────
-  float fax = ax16 / 16384.0f;
-  float fay = ay16 / 16384.0f;
-  float faz = az16 / 16384.0f;
+  // ── Remove gyroZ bias ──────────────────────────────────
+  float gz_dps = fgz - gyroZ_offset;
 
   // ── Integrate yaw ──────────────────────────────────────
   yaw += gz_dps * dt;
 
   // ── Complementary filter for roll/pitch ────────────────
-  float accRoll  =  atan2(fay, faz)                          * RAD_TO_DEG;
-  float accPitch = -atan2(fax, sqrt(fay*fay + faz*faz))      * RAD_TO_DEG;
-  roll  = 0.98f * (roll  + gx_dps * dt) + 0.02f * accRoll;
-  pitch = 0.98f * (pitch + gy_dps * dt) + 0.02f * accPitch;
+  float accRoll  =  atan2(fay, faz)                            * RAD_TO_DEG;
+  float accPitch = -atan2(fax, sqrt(fay*fay + faz*faz))        * RAD_TO_DEG;
+  roll  = 0.98f * (roll  + fgx * dt) + 0.02f * accRoll;
+  pitch = 0.98f * (pitch + fgy * dt) + 0.02f * accPitch;
 
   // ── Check if rotation target reached ───────────────────
   if (rotating) {
@@ -307,13 +311,14 @@ void setup() {
   digitalWrite(RIGHT_R_EN, HIGH); digitalWrite(RIGHT_L_EN, HIGH);
   stopMotors();
 
-  // IMU
-  Wire.begin();
-  mpu.initialize();
-  if (!mpu.testConnection()) {
-    Serial.println("IMU_ERROR: MPU-6050 not found!");
+  // IMU – FaBo9Axis_MPU9250
+  // mpu.begin() initialises the sensor over I2C and returns true on success.
+  // Wire.begin() is called internally by the library; no need to call it separately.
+  if (!mpu.begin()) {
+    Serial.println("IMU_ERROR: MPU-9250 not found!");
   } else {
     Serial.println("IMU_OK");
+    lastIMUTime = micros();
     calibrateIMU();
   }
 
@@ -341,14 +346,9 @@ void loop() {
   if (now - lastStatusMs >= STATUS_INTERVAL) {
     lastStatusMs = now;
 
-    int16_t ax16, ay16, az16, gx16, gy16, gz16;
-    mpu.getMotion6(&ax16, &ay16, &az16, &gx16, &gy16, &gz16);
-    float fax = ax16 / 16384.0f;
-    float fay = ay16 / 16384.0f;
-    float faz = az16 / 16384.0f;
-    float fgx = gx16 / 131.0f;
-    float fgy = gy16 / 131.0f;
-    float fgz = gz16 / 131.0f;
+    float fax, fay, faz, fgx, fgy, fgz;
+    readIMURaw(fax, fay, faz, fgx, fgy, fgz);
+    // accel already in [g], gyro already in [deg/s]
 
     Serial.print("STATUS,");
     Serial.print(yaw,   2); Serial.print(",");
