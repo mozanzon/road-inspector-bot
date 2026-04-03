@@ -26,8 +26,10 @@ bool        straightCorrection = true; // enable / disable at runtime via comman
 unsigned long lastCorrectionMs = 0;
 
 // ── Turn target: both TURN_LEFT and TURN_RIGHT stop here via shortest path
-const float TURN_TARGET = 270.0;
-const float HEADING_TOL =   5.0;
+const float TURN_TARGET     = 270.0;
+const float HEADING_TOL     =   5.0;
+const int   DEFAULT_TURN_SPEED = 120; // fallback speed when caller passes 0
+const unsigned long TURN_TIMEOUT_MS = 10000; // max time for a single turn
 
 FaBo9Axis fabo_9axis;
 
@@ -157,9 +159,9 @@ void sendImuPacket() {
 // this prevents "3-spin" overshoots that occur when a fixed direction
 // is used and the robot starts near or past the target.
 void turnToHeading(int speed, float targetDeg) {
-  if (speed < 1) speed = 120;
+  if (speed < 1) speed = DEFAULT_TURN_SPEED;
 
-  const unsigned long TIMEOUT_MS = 10000;
+  const unsigned long TIMEOUT_MS = TURN_TIMEOUT_MS;
 
   if (currentDir != 0) rampDown();
   delay(150);

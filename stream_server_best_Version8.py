@@ -583,7 +583,7 @@ def cmd():
         with ser_lock:
             ser = None
         log.warning(f"Serial write failed, port marked dead: {e}")
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return jsonify({"ok": False, "error": "serial write failed"}), 500
 
 
 @app.route("/imu")
