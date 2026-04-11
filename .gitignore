@@ -1,2 +1,3 @@
 .qwen/
 gha-creds-*.json
+".github/" 
