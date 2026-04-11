@@ -15,6 +15,16 @@ const float WHEEL_TRACK    = 0.60;  // meters between wheel contact patches
 const float HALF_TRACK     = WHEEL_TRACK / 2.0;  // 0.30 m
 const float MAX_LINEAR_MS  = 1.0;   // m/s at PWM=255 (calibrate per robot)
 const float PWM_PER_MS     = 255.0 / MAX_LINEAR_MS;
+const float WHEEL_RADIUS_M = 0.05;  // wheel radius in meters (verify by measurement)
+const float TICKS_PER_REV  = 600.0; // encoder ticks per revolution (verify by measurement)
+
+// ── Wheel PID control (closed-loop speed control for CMD,v,omega)
+const unsigned long PID_INTERVAL_MS = 20;  // 50 Hz
+const float PID_KP = 200.0;
+const float PID_KI = 35.0;
+const float PID_KD = 2.5;
+const float PID_INTEGRAL_LIMIT = 2.0;
+const float PID_TARGET_DEADBAND_MS = 0.01;
 
 int currentSpeed = 0;
 int currentDir   = 0; // 1=fwd, -1=back, 0=stop
@@ -22,7 +32,8 @@ int currentDir   = 0; // 1=fwd, -1=back, 0=stop
 // ── IMU streaming state
 bool imuStreaming = false;
 unsigned long imuInterval = 100;   // ms between IMU packets (default 10 Hz)
-unsigned long lastImuTime  = 0;
+unsigned long lastImuTime  = 0;    // previous IMU packet timestamp (for dt_ms field)
+unsigned long lastImuSchedule = 0; // scheduler timestamp for periodic streaming
 
 FaBo9Axis fabo_9axis;
 
@@ -65,6 +76,24 @@ int       rampTargetSpeed = 0;
 int       rampStep  = 0;
 unsigned long rampStepStart = 0;
 
+struct WheelPidState {
+  float integral;
+  float prevError;
+};
+
+WheelPidState pidLeft = {0.0, 0.0};
+WheelPidState pidRight = {0.0, 0.0};
+bool pidEnabled = false;
+float targetLeftMs = 0.0;
+float targetRightMs = 0.0;
+unsigned long lastPidTick = 0;
+long pidPrevEnc1 = 0;
+long pidPrevEnc2 = 0;
+
+void disablePidControl();
+void setPidTargets(float leftMs, float rightMs);
+bool pidTick();
+
 // ---------- Encoder ISRs ----------
 void ISR_encoder1() {
   if (digitalRead(ENC1_B) == HIGH) { encoder1_count++; }
@@ -78,6 +107,7 @@ void ISR_encoder2() {
 
 // ---------- Motor primitives ----------
 void emergencyStop() {
+  disablePidControl();
   analogWrite(LEFT_RPWM, 0);  analogWrite(LEFT_LPWM, 0);
   analogWrite(RIGHT_RPWM, 0); analogWrite(RIGHT_LPWM, 0);
   currentSpeed = 0;
@@ -89,6 +119,7 @@ void emergencyStop() {
 }
 
 void stopMotors() {
+  disablePidControl();
   analogWrite(LEFT_RPWM, 0);  analogWrite(LEFT_LPWM, 0);
   analogWrite(RIGHT_RPWM, 0); analogWrite(RIGHT_LPWM, 0);
   currentSpeed = 0;
@@ -133,6 +164,130 @@ void spinLeft(int speed) {
   analogWrite(RIGHT_LPWM, 0);    analogWrite(RIGHT_RPWM, speed);
 }
 
+// ---------- Wheel PID helpers ----------
+void resetPidState() {
+  pidLeft.integral = 0.0;
+  pidLeft.prevError = 0.0;
+  pidRight.integral = 0.0;
+  pidRight.prevError = 0.0;
+}
+
+void disablePidControl() {
+  pidEnabled = false;
+  targetLeftMs = 0.0;
+  targetRightMs = 0.0;
+  resetPidState();
+}
+
+void setPidTargets(float leftMs, float rightMs) {
+  if (leftMs > MAX_LINEAR_MS) leftMs = MAX_LINEAR_MS;
+  if (leftMs < -MAX_LINEAR_MS) leftMs = -MAX_LINEAR_MS;
+  if (rightMs > MAX_LINEAR_MS) rightMs = MAX_LINEAR_MS;
+  if (rightMs < -MAX_LINEAR_MS) rightMs = -MAX_LINEAR_MS;
+
+  bool resetNeeded = !pidEnabled;
+  if (!resetNeeded) {
+    if ((leftMs >= 0.0 && targetLeftMs < 0.0) || (leftMs < 0.0 && targetLeftMs >= 0.0)) resetNeeded = true;
+    if ((rightMs >= 0.0 && targetRightMs < 0.0) || (rightMs < 0.0 && targetRightMs >= 0.0)) resetNeeded = true;
+  }
+
+  targetLeftMs = leftMs;
+  targetRightMs = rightMs;
+
+  if (resetNeeded) {
+    noInterrupts();
+    pidPrevEnc1 = encoder1_count;
+    pidPrevEnc2 = encoder2_count;
+    interrupts();
+    lastPidTick = millis();
+    resetPidState();
+  }
+
+  pidEnabled = true;
+}
+
+int computePidPwm(WheelPidState &pid, float targetAbsMs, float measuredAbsMs, float dtSec) {
+  if (targetAbsMs <= PID_TARGET_DEADBAND_MS || dtSec <= 0.0) {
+    pid.integral = 0.0;
+    pid.prevError = 0.0;
+    return 0;
+  }
+
+  float error = targetAbsMs - measuredAbsMs;
+  pid.integral += error * dtSec;
+  if (pid.integral > PID_INTEGRAL_LIMIT) pid.integral = PID_INTEGRAL_LIMIT;
+  if (pid.integral < -PID_INTEGRAL_LIMIT) pid.integral = -PID_INTEGRAL_LIMIT;
+
+  float derivative = (error - pid.prevError) / dtSec;
+  float control = (PID_KP * error) + (PID_KI * pid.integral) + (PID_KD * derivative);
+  if (control < 0.0) control = 0.0;
+  if (control > 255.0) control = 255.0;
+
+  pid.prevError = error;
+  return (int)(control + 0.5);
+}
+
+void applySignedWheelPwm(int leftPwm, int rightPwm, bool leftForward, bool rightForward) {
+  if (leftForward && rightForward) {
+    setForwardDiff(leftPwm, rightPwm);
+    currentDir = (leftPwm > 0 || rightPwm > 0) ? 1 : 0;
+    return;
+  }
+  if (!leftForward && !rightForward) {
+    setBackwardDiff(leftPwm, rightPwm);
+    currentDir = (leftPwm > 0 || rightPwm > 0) ? -1 : 0;
+    return;
+  }
+
+  if (leftForward && !rightForward) {
+    analogWrite(LEFT_LPWM, 0);   analogWrite(LEFT_RPWM, leftPwm);
+    analogWrite(RIGHT_RPWM, 0);  analogWrite(RIGHT_LPWM, rightPwm);
+  } else {
+    analogWrite(LEFT_RPWM, 0);   analogWrite(LEFT_LPWM, leftPwm);
+    analogWrite(RIGHT_LPWM, 0);  analogWrite(RIGHT_RPWM, rightPwm);
+  }
+  currentDir = 0;
+}
+
+bool pidTick() {
+  if (!pidEnabled) return false;
+
+  unsigned long now = millis();
+  if (now - lastPidTick < PID_INTERVAL_MS) return true;
+
+  float dtSec = (now - lastPidTick) / 1000.0;
+  if (dtSec <= 0.0) return true;
+  lastPidTick = now;
+
+  noInterrupts();
+  long c1 = encoder1_count;
+  long c2 = encoder2_count;
+  interrupts();
+
+  long d1 = c1 - pidPrevEnc1;
+  long d2 = c2 - pidPrevEnc2;
+  pidPrevEnc1 = c1;
+  pidPrevEnc2 = c2;
+
+  float wheelCirc = 2.0 * PI * WHEEL_RADIUS_M;
+  long d1Abs = (d1 >= 0) ? d1 : -d1;
+  long d2Abs = (d2 >= 0) ? d2 : -d2;
+  float leftMeasuredAbsMs = ((float)d1Abs / TICKS_PER_REV) * wheelCirc / dtSec;
+  float rightMeasuredAbsMs = ((float)d2Abs / TICKS_PER_REV) * wheelCirc / dtSec;
+
+  float leftTargetAbs = (targetLeftMs >= 0.0) ? targetLeftMs : -targetLeftMs;
+  float rightTargetAbs = (targetRightMs >= 0.0) ? targetRightMs : -targetRightMs;
+
+  int leftPwm = computePidPwm(pidLeft, leftTargetAbs, leftMeasuredAbsMs, dtSec);
+  int rightPwm = computePidPwm(pidRight, rightTargetAbs, rightMeasuredAbsMs, dtSec);
+
+  bool leftForward = targetLeftMs >= 0.0;
+  bool rightForward = targetRightMs >= 0.0;
+  applySignedWheelPwm(leftPwm, rightPwm, leftForward, rightForward);
+  currentSpeed = max(leftPwm, rightPwm);
+  return true;
+}
+
 // ---------- IMU helpers ----------
 float readHeadingDeg() {
   float mx, my, mz;
@@ -150,7 +305,7 @@ float angleDiffDeg(float fromDeg, float toDeg) {
 }
 
 // Send combined IMU + Encoder packet over Serial as a single CSV line:
-// IMU,ax,ay,az,gx,gy,gz,heading,enc1_delta,enc2_delta,dt
+// IMU,ax,ay,az,gx,gy,gz,heading,enc1_delta,enc2_delta,dt_ms
 void sendImuPacket() {
   float ax, ay, az, gx, gy, gz;
   fabo_9axis.readAccelXYZ(&ax, &ay, &az);
@@ -168,7 +323,7 @@ void sendImuPacket() {
   enc2_snapshot = c2;
 
   unsigned long now = millis();
-  float dt = (now - lastImuTime) / 1000.0;  // seconds for EKF
+  unsigned long dtMs = now - lastImuTime;
   lastImuTime = now;
 
   Serial.print("IMU,");
@@ -181,7 +336,7 @@ void sendImuPacket() {
   Serial.print(heading, 2); Serial.print(",");
   Serial.print(enc1_delta); Serial.print(",");
   Serial.print(enc2_delta); Serial.print(",");
-  Serial.println(dt, 3);
+  Serial.println(dtMs);
 }
 
 // ── Non-blocking turn state machine tick — call every loop()
@@ -282,6 +437,8 @@ bool rampTick() {
 // ── Start a non-blocking turn — returns immediately
 // dir: +1 right(cw), -1 left(ccw)
 void startTurn(int dir, int speed) {
+  disablePidControl();
+
   if (speed < 1) speed = 120;
 
   turnDir   = dir;
@@ -328,39 +485,10 @@ void handleCommand(String cmd) {
     float v_left  = v - omega * HALF_TRACK;  // m/s
     float v_right = v + omega * HALF_TRACK;  // m/s
 
-    // Convert to PWM and handle direction per wheel
-    int leftPWM  = (int)(abs(v_left)  * PWM_PER_MS);
-    int rightPWM = (int)(abs(v_right) * PWM_PER_MS);
-    leftPWM  = constrain(leftPWM,  0, 255);
-    rightPWM = constrain(rightPWM, 0, 255);
-
     // Cancel any active turn or ramp
     turnState = TURN_IDLE;
     rampState = RAMP_IDLE;
-
-    // Set direction per wheel and apply PWM
-    bool leftForward  = v_left  >= 0;
-    bool rightForward = v_right >= 0;
-
-    if (leftForward && rightForward) {
-      setForwardDiff(leftPWM, rightPWM);
-      currentDir = 1;
-    } else if (!leftForward && !rightForward) {
-      setBackwardDiff(leftPWM, rightPWM);
-      currentDir = -1;
-    } else if (leftForward && !rightForward) {
-      // Left forward, right backward — pivot turn
-      analogWrite(LEFT_LPWM, 0);   analogWrite(LEFT_RPWM, leftPWM);
-      analogWrite(RIGHT_RPWM, 0);  analogWrite(RIGHT_LPWM, rightPWM);
-      currentDir = 0;
-    } else {
-      // Left backward, right forward — pivot turn
-      analogWrite(LEFT_RPWM, 0);   analogWrite(LEFT_LPWM, leftPWM);
-      analogWrite(RIGHT_LPWM, 0);  analogWrite(RIGHT_RPWM, rightPWM);
-      currentDir = 0;
-    }
-
-    currentSpeed = max(leftPWM, rightPWM);
+    setPidTargets(v_left, v_right);
     return;
   }
 
@@ -384,6 +512,9 @@ void handleCommand(String cmd) {
       int ms = cmd.substring(11).toInt();
       if (ms >= 20 && ms <= 2000) imuInterval = ms;
     }
+    unsigned long now = millis();
+    lastImuSchedule = now;
+    lastImuTime = now;
     imuStreaming = true;
     Serial.print("IMU streaming started @ ");
     Serial.print(imuInterval);
@@ -418,6 +549,8 @@ void handleCommand(String cmd) {
 
   // SET_SPEED <0-255> — update currentSpeed without changing direction
   if (cmd.startsWith("SET_SPEED ")) {
+    disablePidControl();
+
     int speed = cmd.substring(10).toInt();
     if (speed < 0 || speed > 255) {
       Serial.println("ERROR: Speed must be 0-255.");
@@ -432,8 +565,11 @@ void handleCommand(String cmd) {
 
   // FORWARD / BACKWARD — start non-blocking ramp
   if (cmd.startsWith("FORWARD ") || cmd.startsWith("BACKWARD ")) {
+    disablePidControl();
+
     int spaceIdx = cmd.indexOf(' ');
     String dirStr = cmd.substring(0, spaceIdx);
+    int dir = (dirStr == "FORWARD") ? 1 : -1;
     int speed = cmd.substring(spaceIdx + 1).toInt();
 
     if (speed < 0 || speed > 255) {
@@ -450,6 +586,7 @@ void handleCommand(String cmd) {
     rampDir   = dir;
     rampTargetSpeed = speed;
     rampStep  = 0;
+    rampStepStart = millis();
     rampState = RAMP_RAMPING;
     return;
   }
@@ -524,7 +661,8 @@ void setup() {
 
   // ── Auto-start IMU streaming for autonomous/EKF operation
   imuStreaming = true;
-  lastImuTime = millis();  // prime the timer so first packet sends immediately
+  lastImuTime = millis();
+  lastImuSchedule = lastImuTime;
   Serial.print("IMU streaming auto-started @ ");
   Serial.print(imuInterval);
   Serial.println(" ms");
@@ -536,8 +674,8 @@ void loop() {
   // ── Non-blocking IMU streaming
   if (imuStreaming) {
     unsigned long now = millis();
-    if (now - lastImuTime >= imuInterval) {
-      lastImuTime = now;
+    if (now - lastImuSchedule >= imuInterval) {
+      lastImuSchedule = now;
       sendImuPacket();
     }
   }
@@ -547,6 +685,9 @@ void loop() {
 
   // ── Non-blocking turn state machine
   turnTick();
+
+  // ── Wheel PID control (CMD,v,omega)
+  pidTick();
 
   // ── Serial command handling (always runs — even during turns)
   if (Serial.available()) {

@@ -34,6 +34,7 @@ app = Flask(__name__)
 
 ser = None
 ser_lock = threading.Lock()
+open_serial_lock = threading.Lock()
 camera = None
 
 # ── IMU state — updated by background reader thread
@@ -42,6 +43,7 @@ imu_data = {
     "gx": 0.0, "gy": 0.0, "gz": 0.0,
     "heading": 0.0,
     "enc1": 0, "enc2": 0,
+    "dt_ms": 0,
     "ts": 0.0
 }
 imu_lock = threading.Lock()
@@ -67,18 +69,22 @@ def open_serial():
     if serial is None:
         log.warning("pyserial not installed. pip3 install pyserial")
         return False
-    try:
-        s = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=0.2)
-        time.sleep(2.0)
+    with open_serial_lock:
         with ser_lock:
-            ser = s
-        log.info(f"Serial connected: {SERIAL_PORT} @ {SERIAL_BAUD}")
-        return True
-    except Exception as e:
-        with ser_lock:
-            ser = None
-        log.warning(f"Serial unavailable: {e}")
-        return False
+            if ser is not None:
+                return True
+        try:
+            s = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=0.2)
+            time.sleep(2.0)
+            with ser_lock:
+                ser = s
+            log.info(f"Serial connected: {SERIAL_PORT} @ {SERIAL_BAUD}")
+            return True
+        except Exception as e:
+            with ser_lock:
+                ser = None
+            log.warning(f"Serial unavailable: {e}")
+            return False
 
 
 # ── Background thread: reads all lines from serial, parses IMU packets
@@ -114,10 +120,10 @@ def serial_reader():
 
 
 def _parse_imu(line):
-    """Parse 'IMU,ax,ay,az,gx,gy,gz,heading,enc1,enc2' and notify SSE subscribers."""
+    """Parse IMU CSV: IMU,ax,ay,az,gx,gy,gz,heading,enc1,enc2[,dt_ms]."""
     global imu_data
     parts = line.split(",")
-    if len(parts) != 10:
+    if len(parts) not in (10, 11):
         return
     try:
         data = {
@@ -130,6 +136,7 @@ def _parse_imu(line):
             "heading": float(parts[7]),
             "enc1": int(parts[8]),
             "enc2": int(parts[9]),
+            "dt_ms": int(parts[10]) if len(parts) == 11 else 0,
             "ts": time.time()
         }
     except ValueError:
@@ -142,7 +149,7 @@ def _parse_imu(line):
     msg = (
         f"data: {data['ax']:.3f},{data['ay']:.3f},{data['az']:.3f},"
         f"{data['gx']:.3f},{data['gy']:.3f},{data['gz']:.3f},"
-        f"{data['heading']:.2f},{data['enc1']},{data['enc2']}\n\n"
+        f"{data['heading']:.2f},{data['enc1']},{data['enc2']},{data['dt_ms']}\n\n"
     )
     with imu_subs_lock:
         dead = []
@@ -471,7 +478,7 @@ function startSse() {{
   sse = new EventSource('/imu');
   sse.onmessage = function(e) {{
     const parts = e.data.split(',');
-    if (parts.length !== 9) return;
+        if (parts.length < 9) return;
     const [ax, ay, az, gx, gy, gz, heading, enc1, enc2] = parts.map(Number);
     document.getElementById('ax').textContent = ax.toFixed(3);
     document.getElementById('ay').textContent = ay.toFixed(3);
@@ -567,7 +574,7 @@ function drawAccelChart() {{
 def cmd():
     global ser
     data = request.get_json(silent=True) or {}
-    c = str(data.get("cmd", "")).strip()
+    c = str(data.get("cmd", "")).replace("\r", "").replace("\n", "").strip()
     if not c:
         return jsonify({"ok": False, "error": "missing cmd"}), 400
 
@@ -578,6 +585,9 @@ def cmd():
             return jsonify({"ok": False, "error": "serial not connected"}), 503
         with ser_lock:
             s = ser
+
+    if s is None:
+        return jsonify({"ok": False, "error": "serial not connected"}), 503
 
     try:
         s.write((c + "\n").encode("utf-8"))
@@ -627,6 +637,8 @@ def imu_snapshot():
 
 @app.route("/stream")
 def stream():
+    if camera is None:
+        return "Camera not ready", 503
     return Response(mjpeg_generator(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 
