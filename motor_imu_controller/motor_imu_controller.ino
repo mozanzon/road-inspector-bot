@@ -20,6 +20,22 @@ unsigned long lastImuTime  = 0;
 
 FaBo9Axis fabo_9axis;
 
+// ── Encoder pins (quadrature, X1 encoding on channel A rising edge)
+//     ENC2_B moved to pin 13 to avoid conflict with LEFT_RPWM (pin 5)
+const int ENC1_A = 2;   // Interrupt pin (INT0)
+const int ENC1_B = 4;
+const int ENC2_A = 3;   // Interrupt pin (INT1)
+const int ENC2_B = 13;  // Was pin 5 in draft — moved to avoid LEFT_RPWM conflict
+
+volatile long encoder1_count = 0;
+volatile long encoder2_count = 0;
+
+// Snapshot values (read atomically in loop)
+long enc1_snapshot = 0;
+long enc2_snapshot = 0;
+long enc1_delta    = 0;  // ticks since last stream packet
+long enc2_delta    = 0;
+
 // ── Non-blocking turn state machine
 enum TurnState { TURN_IDLE, TURN_RAMP_DOWN, TURN_SETTLE, TURN_SPINNING, TURN_DONE };
 TurnState turnState = TURN_IDLE;
@@ -42,6 +58,17 @@ int       rampDir   = 0;
 int       rampTargetSpeed = 0;
 int       rampStep  = 0;
 unsigned long rampStepStart = 0;
+
+// ---------- Encoder ISRs ----------
+void ISR_encoder1() {
+  if (digitalRead(ENC1_B) == HIGH) { encoder1_count++; }
+  else { encoder1_count--; }
+}
+
+void ISR_encoder2() {
+  if (digitalRead(ENC2_B) == HIGH) { encoder2_count++; }
+  else { encoder2_count--; }
+}
 
 // ---------- Motor primitives ----------
 void emergencyStop() {
@@ -101,13 +128,23 @@ float angleDiffDeg(float fromDeg, float toDeg) {
   return d;
 }
 
-// Send one IMU packet over Serial as a single CSV line:
-// IMU,ax,ay,az,gx,gy,gz,heading
+// Send combined IMU + Encoder packet over Serial as a single CSV line:
+// IMU,ax,ay,az,gx,gy,gz,heading,enc1,enc2
 void sendImuPacket() {
   float ax, ay, az, gx, gy, gz;
   fabo_9axis.readAccelXYZ(&ax, &ay, &az);
   fabo_9axis.readGyroXYZ(&gx, &gy, &gz);
   float heading = readHeadingDeg();
+
+  // Atomic encoder snapshot + delta calculation
+  noInterrupts();
+  long c1 = encoder1_count;
+  long c2 = encoder2_count;
+  interrupts();
+  enc1_delta = c1 - enc1_snapshot;
+  enc2_delta = c2 - enc2_snapshot;
+  enc1_snapshot = c1;
+  enc2_snapshot = c2;
 
   Serial.print("IMU,");
   Serial.print(ax, 3); Serial.print(",");
@@ -116,7 +153,9 @@ void sendImuPacket() {
   Serial.print(gx, 3); Serial.print(",");
   Serial.print(gy, 3); Serial.print(",");
   Serial.print(gz, 3); Serial.print(",");
-  Serial.println(heading, 2);
+  Serial.print(heading, 2); Serial.print(",");
+  Serial.print(enc1_delta); Serial.print(",");
+  Serial.println(enc2_delta);
 }
 
 // ── Non-blocking turn state machine tick — call every loop()
@@ -286,6 +325,18 @@ void handleCommand(String cmd) {
     return;
   }
 
+  // ENC_RESET — zero encoder counters
+  if (cmd == "ENC_RESET") {
+    noInterrupts();
+    encoder1_count = 0;
+    encoder2_count = 0;
+    enc1_snapshot  = 0;
+    enc2_snapshot  = 0;
+    interrupts();
+    Serial.println("Encoder counters reset.");
+    return;
+  }
+
   // SET_SPEED <0-255> — update currentSpeed without changing direction
   if (cmd.startsWith("SET_SPEED ")) {
     int speed = cmd.substring(10).toInt();
@@ -357,6 +408,7 @@ void handleCommand(String cmd) {
   Serial.println("  IMU_STREAM [interval_ms]");
   Serial.println("  IMU_STOP");
   Serial.println("  IMU_READ");
+  Serial.println("  ENC_RESET");
 }
 
 void setup() {
@@ -372,6 +424,14 @@ void setup() {
 
   digitalWrite(LEFT_R_EN, HIGH);  digitalWrite(LEFT_L_EN, HIGH);
   digitalWrite(RIGHT_R_EN, HIGH); digitalWrite(RIGHT_L_EN, HIGH);
+
+  // ── Encoder pins
+  pinMode(ENC1_A, INPUT_PULLUP);
+  pinMode(ENC1_B, INPUT_PULLUP);
+  pinMode(ENC2_A, INPUT_PULLUP);
+  pinMode(ENC2_B, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(ENC1_A), ISR_encoder1, RISING);
+  attachInterrupt(digitalPinToInterrupt(ENC2_A), ISR_encoder2, RISING);
 
   Wire.begin();
   Serial.println("configuring 9axis...");
