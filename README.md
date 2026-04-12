@@ -4,7 +4,7 @@ An autonomous road inspection robot with real-time video streaming, IMU-based or
 
 ## Overview
 
-Road Inspector Bot is a ROS2-enabled mobile robot platform designed for automated road surface inspection. It combines:
+Road Inspector Bot is a Raspberry Pi + Arduino mobile robot platform designed for automated road surface inspection. It combines:
 
 - **Arduino-based motor control** with IMU (MPU-9250) for precise movement and heading awareness
 - **Raspberry Pi-based vision system** with live MJPEG video streaming
@@ -30,12 +30,12 @@ Road Inspector Bot is a ROS2-enabled mobile robot platform designed for automate
 └────────────────────────┼─────────────────────────────┘
                          │
 ┌────────────────────────┼─────────────────────────────┐
-│                    Arduino Uno                         │
+│                    Arduino Mega                        │
 │  ┌─────────────────────┼───────────────────────────┐  │
 │  │   motor_imu_controller.ino                       │  │
 │  │  ┌──────────────┐  ┌──────────────────────────┐ │  │
 │  │  │ Motor Driver │  │  MPU-9250 IMU (I2C)     │ │  │
-│  │  │ L298N/L293D  │  │  - Accelerometer         │ │  │
+│  │  │ BTS7960      │  │  - Accelerometer         │ │  │
 │  │  │ - Left Motor │  │  - Gyroscope             │ │  │
 │  │  │ - Right Motor│  │  - Magnetometer (Compass)│ │  │
 │  │  └──────────────┘  └──────────────────────────┘ │  │
@@ -49,7 +49,7 @@ Road Inspector Bot is a ROS2-enabled mobile robot platform designed for automate
 - **Differential drive** with independent left/right motor channels
 - **Smooth ramping** for acceleration/deceleration (50 steps over 800ms)
 - **Emergency stop** with immediate motor cutoff
-- **IMU-assisted heading control** — turn to precise compass headings (180°, 270°)
+- **IMU-assisted heading control** — relative 90° left/right turns
 - **Dynamic speed adjustment** via `SET_SPEED` command without changing direction
 
 ### IMU Telemetry
@@ -78,11 +78,11 @@ Road Inspector Bot is a ROS2-enabled mobile robot platform designed for automate
 
 | Component | Description |
 |-----------|-------------|
-| **Arduino Uno** (or compatible) | Motor and IMU controller |
-| **MPU-9250 IMU Module** | 9-axis sensor via I2C (SDA/A4, SCL/A5) |
-| **Motor Driver** | L298N, L293D, or equivalent dual H-bridge |
+| **Arduino Mega** | Motor, encoder, and IMU real-time controller |
+| **MPU-9250 IMU Module** | 9-axis sensor via I2C (SDA=20, SCL=21 on Mega) |
+| **Motor Driver** | BTS7960 (IBT-2) x2 |
 | **DC Motors x2** | Differential drive configuration |
-| **Raspberry Pi** | 3B+ or 4 recommended (runs vision server) |
+| **Raspberry Pi** | Raspberry Pi 5 recommended (runs vision server) |
 | **USB Camera** | UVC-compatible (e.g., Raspberry Pi Camera Module via USB adapter) |
 | **Power Supply** | Appropriate for motors and Arduino/Pi |
 
@@ -103,8 +103,8 @@ Right Motor (M2):
   L_EN → Pin 12
 
 MPU-9250 IMU (I2C):
-  SDA → A4
-  SCL → A5
+   SDA → Pin 20 (Mega)
+   SCL → Pin 21 (Mega)
   VCC → 3.3V
   GND → GND
 ```
@@ -137,7 +137,7 @@ pip3 install opencv-python flask pyserial
 ### 1. Arduino Setup
 
 1. Install the **FaBo9Axis_MPU9250** library via Arduino IDE → Sketch → Include Library → Manage Libraries
-2. Upload `motor_imu_controller.ino` to your Arduino Uno
+2. Upload `motor_imu_controller/motor_imu_controller.ino` to your Arduino Mega
 3. Open Serial Monitor (115200 baud) to verify initialization:
    ```
    configuring 9axis...
@@ -184,19 +184,22 @@ Send commands to the Arduino via serial (115200 baud, 8N1):
 | `FORWARD <0-255>` | Move forward with ramp-up to specified speed |
 | `BACKWARD <0-255>` | Move backward with ramp-up to specified speed |
 | `SET_SPEED <0-255>` | Update current motor speed without changing direction |
-| `TURN_LEFT_270 <1-255>` | Spin left until heading reaches 270° |
-| `TURN_RIGHT_180 <1-255>` | Spin right until heading reaches 180° |
-| `STOP` | Smooth deceleration to stop |
+| `TURN_LEFT_90 <1-255>` | Relative left 90° turn using compass heading |
+| `TURN_RIGHT_90 <1-255>` | Relative right 90° turn using compass heading |
+| `STOP` | Stop motors |
 | `S` | Emergency stop (immediate cutoff) |
+| `CMD,<v_m/s>,<omega_rad/s>` | Differential-drive command for autonomy stack |
 | `IMU_STREAM [interval_ms]` | Start continuous IMU data streaming (default: 100ms / 10 Hz) |
 | `IMU_STOP` | Stop IMU streaming |
 | `IMU_READ` | One-shot IMU data read |
+| `ENC_RESET` | Reset encoder counters |
 
 **Example Serial Commands:**
 ```
 FORWARD 150
 SET_SPEED 200
-TURN_LEFT_270 100
+TURN_LEFT_90 100
+CMD,0.50,0.20
 IMU_STREAM 50
 S
 ```
@@ -207,7 +210,7 @@ Access the dashboard at `http://<pi-ip>:8080/`
 
 **Motor Control Panel:**
 - **Speed Slider:** Adjust speed from 40-255 in real-time
-- **Direction Buttons:** Forward, Backward, Left/Right 180° turns
+- **Direction Buttons:** Forward, Backward, Left/Right 90° turns
 - **Emergency Button:** Immediate motor cutoff
 
 **IMU Panel:**
@@ -253,8 +256,8 @@ http://<pi-ip>:8080/stream
 const int RAMP_STEPS = 50;              // Number of ramp steps for smooth acceleration
 const unsigned long RAMP_TIME = 800;    // Total ramp time in milliseconds
 unsigned long imuInterval = 100;        // Default IMU streaming interval (ms)
-const float HEADING_TOL = 5.0;          // Heading tolerance in degrees for turn-to-heading
-const unsigned long TIMEOUT_MS = 10000; // Turn timeout in milliseconds
+const float TURN_HEADING_TOL = 5.0;     // Heading tolerance in degrees for turn-to-heading
+unsigned long turnTimeout = 10000;      // Turn timeout in milliseconds
 ```
 
 **In `vision_control_server.py`:**
@@ -299,8 +302,12 @@ SERIAL_BAUD   = 115200   # Serial baud rate
 
 ```
 road-inspector-bot/
-├── motor_imu_controller.ino    # Arduino firmware (motor + IMU control)
+├── motor_imu_controller/
+│   └── motor_imu_controller.ino    # Arduino firmware (motor + IMU + encoders)
+├── Encoder_draft1/
+│   └── Encoder_draft1.ino          # Legacy standalone encoder test
 ├── vision_control_server.py    # Raspberry Pi server (vision + web UI + serial bridge)
+├── QWEN.md                     # Project memory / system context
 └── README.md                   # This file
 ```
 
@@ -308,15 +315,17 @@ road-inspector-bot/
 
 **Serial CSV Format:**
 ```
-IMU,ax,ay,az,gx,gy,gz,heading
+IMU,ax,ay,az,gx,gy,gz,heading,enc1_delta,enc2_delta,dt_ms
 ```
 - `ax, ay, az`: Accelerometer (g-force, 3 decimal places)
 - `gx, gy, gz`: Gyroscope (°/s, 3 decimal places)
 - `heading`: Compass heading (degrees, 2 decimal places, 0-360°)
+- `enc1_delta, enc2_delta`: Encoder tick deltas since previous IMU packet
+- `dt_ms`: Packet delta-time in milliseconds
 
 **SSE Stream Format:**
 ```
-data: 0.123,-0.456,9.812,0.010,-0.020,0.005,180.50
+data: 0.123,-0.456,9.812,0.010,-0.020,0.005,180.50,12,11,50
 
 ```
 
@@ -331,7 +340,7 @@ data: 0.123,-0.456,9.812,0.010,-0.020,0.005,180.50
 
 - [ ] Computer vision-based road defect detection (cracks, potholes)
 - [ ] GPS integration for geo-tagged inspection data
-- [ ] ROS2 node integration for navigation and mapping
+- [ ] EKF local/global localisation integration (`ekf_local.py`, `ekf_global.py`)
 - [ ] Autonomous patrol patterns with waypoint navigation
 - [ ] Data logging with timestamped IMU + video synchronization
 - [ ] Battery voltage monitoring and low-power alerts

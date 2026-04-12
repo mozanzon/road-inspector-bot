@@ -34,6 +34,7 @@ app = Flask(__name__)
 
 ser = None
 ser_lock = threading.Lock()
+open_serial_lock = threading.Lock()
 camera = None
 
 # ── IMU state — updated by background reader thread
@@ -41,6 +42,8 @@ imu_data = {
     "ax": 0.0, "ay": 0.0, "az": 0.0,
     "gx": 0.0, "gy": 0.0, "gz": 0.0,
     "heading": 0.0,
+    "enc1": 0, "enc2": 0,
+    "dt_ms": 0,
     "ts": 0.0
 }
 imu_lock = threading.Lock()
@@ -66,18 +69,22 @@ def open_serial():
     if serial is None:
         log.warning("pyserial not installed. pip3 install pyserial")
         return False
-    try:
-        s = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=0.2)
-        time.sleep(2.0)
+    with open_serial_lock:
         with ser_lock:
-            ser = s
-        log.info(f"Serial connected: {SERIAL_PORT} @ {SERIAL_BAUD}")
-        return True
-    except Exception as e:
-        with ser_lock:
-            ser = None
-        log.warning(f"Serial unavailable: {e}")
-        return False
+            if ser is not None:
+                return True
+        try:
+            s = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=0.2)
+            time.sleep(2.0)
+            with ser_lock:
+                ser = s
+            log.info(f"Serial connected: {SERIAL_PORT} @ {SERIAL_BAUD}")
+            return True
+        except Exception as e:
+            with ser_lock:
+                ser = None
+            log.warning(f"Serial unavailable: {e}")
+            return False
 
 
 # ── Background thread: reads all lines from serial, parses IMU packets
@@ -113,10 +120,10 @@ def serial_reader():
 
 
 def _parse_imu(line):
-    """Parse 'IMU,ax,ay,az,gx,gy,gz,heading' and notify SSE subscribers."""
+    """Parse IMU CSV: IMU,ax,ay,az,gx,gy,gz,heading,enc1,enc2[,dt_ms]."""
     global imu_data
     parts = line.split(",")
-    if len(parts) != 8:
+    if len(parts) not in (10, 11):
         return
     try:
         data = {
@@ -127,6 +134,9 @@ def _parse_imu(line):
             "gy": float(parts[5]),
             "gz": float(parts[6]),
             "heading": float(parts[7]),
+            "enc1": int(parts[8]),
+            "enc2": int(parts[9]),
+            "dt_ms": int(parts[10]) if len(parts) == 11 else 0,
             "ts": time.time()
         }
     except ValueError:
@@ -139,7 +149,7 @@ def _parse_imu(line):
     msg = (
         f"data: {data['ax']:.3f},{data['ay']:.3f},{data['az']:.3f},"
         f"{data['gx']:.3f},{data['gy']:.3f},{data['gz']:.3f},"
-        f"{data['heading']:.2f}\n\n"
+        f"{data['heading']:.2f},{data['enc1']},{data['enc2']},{data['dt_ms']}\n\n"
     )
     with imu_subs_lock:
         dead = []
@@ -356,9 +366,9 @@ canvas{{display:block;width:100%;border-radius:6px;margin-top:6px;background:#0a
       <div></div>
       <button class="btn-fwd" onclick="sendCmd('FORWARD '+spd())">▲ Forward</button>
       <div></div>
-      <button onclick="sendCmd('TURN_LEFT_180 '+spd())">↺ Left 180°</button>
+      <button onclick="sendCmd('TURN_LEFT_90 '+spd())">↺ Left 90°</button>
       <button class="btn-stop" onclick="sendCmd('STOP')">■ Stop</button>
-      <button onclick="sendCmd('TURN_RIGHT_180 '+spd())">↻ Right 180°</button>
+      <button onclick="sendCmd('TURN_RIGHT_90 '+spd())">↻ Right 90°</button>
       <div></div>
       <button class="btn-bwd" onclick="sendCmd('BACKWARD '+spd())">▼ Backward</button>
       <button class="btn-emg" onclick="sendCmd('S')">⚡ EMERGENCY</button>
@@ -399,6 +409,22 @@ canvas{{display:block;width:100%;border-radius:6px;margin-top:6px;background:#0a
 
     <canvas id="accelChart" width="600" height="90"></canvas>
     <div style="font-size:.7rem;color:#555;text-align:center;margin-top:2px">Accel XYZ history</div>
+  </div>
+
+  <!-- Encoder Panel -->
+  <div class="card">
+    <h3>Wheel Encoders (YT06-OP-600B-2M, 600 PPR)</h3>
+    <div class="imu-grid" style="margin-top:10px">
+      <div class="imu-cell"><div class="label">Left Wheel Δ Ticks</div><div class="val" id="enc1">—</div></div>
+      <div class="imu-cell"><div class="label">Right Wheel Δ Ticks</div><div class="val" id="enc2">—</div></div>
+      <div class="imu-cell"><div class="label">600 Ticks = 1 Rev</div><div class="val" style="color:#888;font-size:.85rem">X1 quadrature</div></div>
+    </div>
+    <div class="imu-controls" style="margin-top:10px">
+      <button onclick="sendCmd('ENC_RESET')" style="background:#123;color:#6af">Reset Counters</button>
+      <div style="flex:1;display:flex;align-items:center;justify-content:center;font-size:.8rem;color:#888">
+        Ticks since last IMU packet
+      </div>
+    </div>
   </div>
 
 </div><!-- /main -->
@@ -452,8 +478,8 @@ function startSse() {{
   sse = new EventSource('/imu');
   sse.onmessage = function(e) {{
     const parts = e.data.split(',');
-    if (parts.length !== 7) return;
-    const [ax, ay, az, gx, gy, gz, heading] = parts.map(Number);
+        if (parts.length < 9) return;
+    const [ax, ay, az, gx, gy, gz, heading, enc1, enc2] = parts.map(Number);
     document.getElementById('ax').textContent = ax.toFixed(3);
     document.getElementById('ay').textContent = ay.toFixed(3);
     document.getElementById('az').textContent = az.toFixed(3);
@@ -463,6 +489,8 @@ function startSse() {{
     document.getElementById('heading').textContent = heading.toFixed(1) + '°';
     drawCompass(heading);
     pushAccel(ax, ay, az);
+    document.getElementById('enc1').textContent = enc1;
+    document.getElementById('enc2').textContent = enc2;
   }};
   sse.onerror = function() {{
     sse.close(); sse = null;
@@ -546,7 +574,7 @@ function drawAccelChart() {{
 def cmd():
     global ser
     data = request.get_json(silent=True) or {}
-    c = str(data.get("cmd", "")).strip()
+    c = str(data.get("cmd", "")).replace("\r", "").replace("\n", "").strip()
     if not c:
         return jsonify({"ok": False, "error": "missing cmd"}), 400
 
@@ -557,6 +585,9 @@ def cmd():
             return jsonify({"ok": False, "error": "serial not connected"}), 503
         with ser_lock:
             s = ser
+
+    if s is None:
+        return jsonify({"ok": False, "error": "serial not connected"}), 503
 
     try:
         s.write((c + "\n").encode("utf-8"))
@@ -606,6 +637,8 @@ def imu_snapshot():
 
 @app.route("/stream")
 def stream():
+    if camera is None:
+        return "Camera not ready", 503
     return Response(mjpeg_generator(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 
@@ -623,6 +656,8 @@ def snapshot():
 def status():
     with imu_lock:
         imu_age = round(time.time() - imu_data["ts"], 2) if imu_data["ts"] else None
+        enc1_total = imu_data.get("enc1", 0)
+        enc2_total = imu_data.get("enc2", 0)
     with ser_lock:
         connected = ser is not None
     return jsonify({
@@ -640,7 +675,9 @@ def status():
         "serial_baud": SERIAL_BAUD,
         "serial_connected": connected,
         "imu_last_age_sec": imu_age,
-        "imu_sse_subscribers": len(imu_subscribers)
+        "imu_sse_subscribers": len(imu_subscribers),
+        "enc1_total_ticks": enc1_total,
+        "enc2_total_ticks": enc2_total
     })
 
 
