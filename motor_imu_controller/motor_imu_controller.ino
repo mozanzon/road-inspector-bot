@@ -20,9 +20,9 @@ const float TICKS_PER_REV  = 600.0; // encoder ticks per revolution (verify by m
 
 // ── Wheel PID control (closed-loop speed control for CMD,v,omega)
 const unsigned long PID_INTERVAL_MS = 20;  // 50 Hz
-const float PID_KP = 200.0;
-const float PID_KI = 35.0;
-const float PID_KD = 2.5;
+float pidKp = 200.0;
+float pidKi = 35.0;
+float pidKd = 2.5;
 const float PID_INTEGRAL_LIMIT = 2.0;
 const float PID_TARGET_DEADBAND_MS = 0.01;
 
@@ -219,7 +219,7 @@ int computePidPwm(WheelPidState &pid, float targetAbsMs, float measuredAbsMs, fl
   if (pid.integral < -PID_INTEGRAL_LIMIT) pid.integral = -PID_INTEGRAL_LIMIT;
 
   float derivative = (error - pid.prevError) / dtSec;
-  float control = (PID_KP * error) + (PID_KI * pid.integral) + (PID_KD * derivative);
+  float control = (pidKp * error) + (pidKi * pid.integral) + (pidKd * derivative);
   if (control < 0.0) control = 0.0;
   if (control > 255.0) control = 255.0;
 
@@ -305,7 +305,7 @@ float angleDiffDeg(float fromDeg, float toDeg) {
 }
 
 // Send combined IMU + Encoder packet over Serial as a single CSV line:
-// IMU,ax,ay,az,gx,gy,gz,heading,enc1_delta,enc2_delta,dt_ms
+// IMU,ax,ay,az,gx,gy,gz,heading,enc1_delta,enc2_delta,dt_ms,enc1_total,enc2_total
 void sendImuPacket() {
   float ax, ay, az, gx, gy, gz;
   fabo_9axis.readAccelXYZ(&ax, &ay, &az);
@@ -336,7 +336,16 @@ void sendImuPacket() {
   Serial.print(heading, 2); Serial.print(",");
   Serial.print(enc1_delta); Serial.print(",");
   Serial.print(enc2_delta); Serial.print(",");
-  Serial.println(dtMs);
+  Serial.print(dtMs); Serial.print(",");
+  Serial.print(c1); Serial.print(",");
+  Serial.println(c2);
+}
+
+void sendPidPacket() {
+  Serial.print("PID,");
+  Serial.print(pidKp, 4); Serial.print(",");
+  Serial.print(pidKi, 4); Serial.print(",");
+  Serial.println(pidKd, 4);
 }
 
 // ── Non-blocking turn state machine tick — call every loop()
@@ -492,6 +501,37 @@ void handleCommand(String cmd) {
     return;
   }
 
+  // PID_SET,kp,ki,kd — runtime PID tuning
+  if (cmd.startsWith("PID_SET") || cmd.startsWith("pid_set")) {
+    int firstComma = cmd.indexOf(',');
+    int secondComma = cmd.indexOf(',', firstComma + 1);
+    int thirdComma = cmd.indexOf(',', secondComma + 1);
+    if (firstComma < 0 || secondComma < 0 || thirdComma < 0) {
+      Serial.println("ERROR: PID_SET format is PID_SET,kp,ki,kd");
+      return;
+    }
+    float newKp = cmd.substring(firstComma + 1, secondComma).toFloat();
+    float newKi = cmd.substring(secondComma + 1, thirdComma).toFloat();
+    float newKd = cmd.substring(thirdComma + 1).toFloat();
+    if (newKp <= 0.0 || newKi < 0.0 || newKd < 0.0) {
+      Serial.println("ERROR: PID requires kp>0, ki>=0, kd>=0");
+      return;
+    }
+    pidKp = newKp;
+    pidKi = newKi;
+    pidKd = newKd;
+    resetPidState();
+    Serial.println("PID updated.");
+    sendPidPacket();
+    return;
+  }
+
+  // PID_GET — report current PID gains
+  if (cmd == "PID_GET" || cmd == "pid_get") {
+    sendPidPacket();
+    return;
+  }
+
   cmd.toUpperCase();
 
   // Emergency stop — always works, even mid-turn
@@ -622,6 +662,8 @@ void handleCommand(String cmd) {
   Serial.println("  TURN_RIGHT_90 <1-255>");
   Serial.println("  STOP | S");
   Serial.println("  CMD,<v_m/s>,<omega_rad/s>  — Pure Pursuit differential drive");
+  Serial.println("  PID_SET,<kp>,<ki>,<kd>");
+  Serial.println("  PID_GET");
   Serial.println("  IMU_STREAM [interval_ms]");
   Serial.println("  IMU_STOP");
   Serial.println("  IMU_READ");
@@ -666,6 +708,7 @@ void setup() {
   Serial.print("IMU streaming auto-started @ ");
   Serial.print(imuInterval);
   Serial.println(" ms");
+  sendPidPacket();
 
   Serial.println("Ready.");
 }

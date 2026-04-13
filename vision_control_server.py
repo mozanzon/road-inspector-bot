@@ -42,7 +42,13 @@ imu_data = {
     "ax": 0.0, "ay": 0.0, "az": 0.0,
     "gx": 0.0, "gy": 0.0, "gz": 0.0,
     "heading": 0.0,
-    "enc1": 0, "enc2": 0,
+    "enc1": 0, "enc2": 0,  # legacy aliases (delta ticks)
+    "enc1_delta": 0, "enc2_delta": 0,
+    "enc1_total": 0, "enc2_total": 0,
+    "enc1_tps": 0.0, "enc2_tps": 0.0,
+    "enc_delta_err": 0,
+    "enc_delta_err_pct": 0.0,
+    "enc_total_err": 0,
     "dt_ms": 0,
     "ts": 0.0
 }
@@ -50,6 +56,8 @@ imu_lock = threading.Lock()
 # SSE subscribers: each is a queue.Queue
 imu_subscribers = []
 imu_subs_lock = threading.Lock()
+pid_data = {"kp": None, "ki": None, "kd": None, "ts": 0.0}
+pid_lock = threading.Lock()
 
 
 def get_local_ip():
@@ -76,6 +84,11 @@ def open_serial():
         try:
             s = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=0.2)
             time.sleep(2.0)
+            try:
+                s.write(b"PID_GET\n")
+                s.flush()
+            except Exception as e:
+                log.debug(f"Could not request PID values on connect: {e}")
             with ser_lock:
                 ser = s
             log.info(f"Serial connected: {SERIAL_PORT} @ {SERIAL_BAUD}")
@@ -85,6 +98,30 @@ def open_serial():
                 ser = None
             log.warning(f"Serial unavailable: {e}")
             return False
+
+
+def write_serial_command(cmd):
+    """Write one line to Arduino serial. Returns (ok, payload, status_code)."""
+    global ser
+    with ser_lock:
+        s = ser
+    if s is None:
+        if not open_serial():
+            return False, {"ok": False, "error": "serial not connected"}, 503
+        with ser_lock:
+            s = ser
+    if s is None:
+        return False, {"ok": False, "error": "serial not connected"}, 503
+
+    try:
+        s.write((cmd + "\n").encode("utf-8"))
+        s.flush()
+        return True, {"ok": True, "sent": cmd}, 200
+    except Exception as e:
+        with ser_lock:
+            ser = None
+        log.warning(f"Serial write failed, port marked dead: {e}")
+        return False, {"ok": False, "error": str(e)}, 500
 
 
 # ── Background thread: reads all lines from serial, parses IMU packets
@@ -99,6 +136,7 @@ def serial_reader():
         with ser_lock:
             s = ser
         if s is None:
+            open_serial()
             time.sleep(1.0)
             continue
         try:
@@ -108,6 +146,8 @@ def serial_reader():
             line = raw.decode("utf-8", errors="replace").strip()
             if line.startswith("IMU,"):
                 _parse_imu(line)
+            elif line.startswith("PID,"):
+                _parse_pid(line)
             else:
                 if line:
                     log.debug(f"[Arduino] {line}")
@@ -119,37 +159,97 @@ def serial_reader():
             open_serial()
 
 
-def _parse_imu(line):
-    """Parse IMU CSV: IMU,ax,ay,az,gx,gy,gz,heading,enc1,enc2[,dt_ms]."""
-    global imu_data
+def _parse_pid(line):
+    """Parse PID CSV: PID,kp,ki,kd."""
     parts = line.split(",")
-    if len(parts) not in (10, 11):
+    if len(parts) != 4:
         return
     try:
-        data = {
-            "ax": float(parts[1]),
-            "ay": float(parts[2]),
-            "az": float(parts[3]),
-            "gx": float(parts[4]),
-            "gy": float(parts[5]),
-            "gz": float(parts[6]),
-            "heading": float(parts[7]),
-            "enc1": int(parts[8]),
-            "enc2": int(parts[9]),
-            "dt_ms": int(parts[10]) if len(parts) == 11 else 0,
-            "ts": time.time()
-        }
+        kp = float(parts[1])
+        ki = float(parts[2])
+        kd = float(parts[3])
     except ValueError:
         return
 
+    with pid_lock:
+        pid_data.update({"kp": kp, "ki": ki, "kd": kd, "ts": time.time()})
+
+
+def _parse_imu(line):
+    """Parse IMU CSV (legacy/new):
+    IMU,ax,ay,az,gx,gy,gz,heading,enc1_delta,enc2_delta[,dt_ms[,enc1_total,enc2_total]]
+    """
+    global imu_data
+    parts = line.split(",")
+    if len(parts) not in (10, 11, 13):
+        return
+    try:
+        ax = float(parts[1])
+        ay = float(parts[2])
+        az = float(parts[3])
+        gx = float(parts[4])
+        gy = float(parts[5])
+        gz = float(parts[6])
+        heading = float(parts[7])
+        enc1_delta = int(parts[8])
+        enc2_delta = int(parts[9])
+        dt_ms = int(parts[10]) if len(parts) >= 11 else 0
+        has_totals = len(parts) == 13
+        enc1_total_wire = int(parts[11]) if has_totals else None
+        enc2_total_wire = int(parts[12]) if has_totals else None
+    except ValueError:
+        return
+
+    dt_sec = dt_ms / 1000.0 if dt_ms > 0 else 0.0
+
     with imu_lock:
+        prev_enc1_total = int(imu_data.get("enc1_total", 0))
+        prev_enc2_total = int(imu_data.get("enc2_total", 0))
+        if has_totals:
+            enc1_total = enc1_total_wire
+            enc2_total = enc2_total_wire
+        else:
+            enc1_total = prev_enc1_total + enc1_delta
+            enc2_total = prev_enc2_total + enc2_delta
+
+        enc1_tps = (enc1_delta / dt_sec) if dt_sec > 0 else 0.0
+        enc2_tps = (enc2_delta / dt_sec) if dt_sec > 0 else 0.0
+        enc_delta_err = enc1_delta - enc2_delta
+        denom = max(abs(enc1_delta), abs(enc2_delta))
+        enc_delta_err_pct = (abs(enc_delta_err) * 100.0 / denom) if denom > 0 else 0.0
+        enc_total_err = enc1_total - enc2_total
+
+        data = {
+            "ax": ax,
+            "ay": ay,
+            "az": az,
+            "gx": gx,
+            "gy": gy,
+            "gz": gz,
+            "heading": heading,
+            "enc1": enc1_delta,
+            "enc2": enc2_delta,
+            "enc1_delta": enc1_delta,
+            "enc2_delta": enc2_delta,
+            "enc1_total": enc1_total,
+            "enc2_total": enc2_total,
+            "enc1_tps": enc1_tps,
+            "enc2_tps": enc2_tps,
+            "enc_delta_err": enc_delta_err,
+            "enc_delta_err_pct": enc_delta_err_pct,
+            "enc_total_err": enc_total_err,
+            "dt_ms": dt_ms,
+            "ts": time.time()
+        }
         imu_data.update(data)
 
     # push to every SSE subscriber
     msg = (
         f"data: {data['ax']:.3f},{data['ay']:.3f},{data['az']:.3f},"
         f"{data['gx']:.3f},{data['gy']:.3f},{data['gz']:.3f},"
-        f"{data['heading']:.2f},{data['enc1']},{data['enc2']},{data['dt_ms']}\n\n"
+        f"{data['heading']:.2f},{data['enc1_delta']},{data['enc2_delta']},{data['dt_ms']},"
+        f"{data['enc1_total']},{data['enc2_total']},{data['enc1_tps']:.2f},{data['enc2_tps']:.2f},"
+        f"{data['enc_delta_err']},{data['enc_delta_err_pct']:.2f}\n\n"
     )
     with imu_subs_lock:
         dead = []
@@ -330,6 +430,8 @@ header .links a{{color:#65c3ff;margin:0 6px;font-size:.85rem}}
 .imu-controls button{{flex:1;font-size:.8rem;padding:7px;border:none;border-radius:5px;background:#223;color:#aaf;cursor:pointer}}
 .imu-controls button:hover{{background:#334}}
 .imu-controls select{{flex:1;font-size:.8rem;padding:7px;border:none;border-radius:5px;background:#223;color:#aaf}}
+.imu-controls input{{flex:1;font-size:.8rem;padding:7px;border:1px solid #2d2d2d;border-radius:5px;background:#161b2d;color:#aaf}}
+.imu-cell input{{width:100%;padding:6px;border:1px solid #2d2d2d;border-radius:4px;background:#0f0f0f;color:#d8ecff;text-align:center}}
 canvas{{display:block;width:100%;border-radius:6px;margin-top:6px;background:#0a0a0a}}
 </style>
 </head><body>
@@ -340,6 +442,7 @@ canvas{{display:block;width:100%;border-radius:6px;margin-top:6px;background:#0a
     <a href="/stream" target="_blank">/stream</a>
     <a href="/snapshot" target="_blank">/snapshot</a>
     <a href="/imu" target="_blank">/imu (SSE)</a>
+    <a href="/pid" target="_blank">/pid</a>
     <a href="/status" target="_blank">/status</a>
   </div>
 </header>
@@ -361,17 +464,26 @@ canvas{{display:block;width:100%;border-radius:6px;margin-top:6px;background:#0a
              oninput="onSpeedSlider(this.value)">
       <span id="spdVal">140</span>
     </div>
+    <div class="speed-row" style="margin-top:-4px">
+      <label>v max @255 (m/s)</label>
+      <input type="number" id="vMax" min="0.10" max="5.00" step="0.05" value="1.00"
+             onchange="onVmaxChange()">
+      <span id="spdMs">0.549</span>
+    </div>
 
     <div class="btn-grid">
       <div></div>
-      <button class="btn-fwd" onclick="sendCmd('FORWARD '+spd())">▲ Forward</button>
+      <button class="btn-fwd" onclick="driveForward()">▲ Forward</button>
       <div></div>
-      <button onclick="sendCmd('TURN_LEFT_90 '+spd())">↺ Left 90°</button>
-      <button class="btn-stop" onclick="sendCmd('STOP')">■ Stop</button>
-      <button onclick="sendCmd('TURN_RIGHT_90 '+spd())">↻ Right 90°</button>
+      <button onclick="turnLeft90()">↺ Left 90°</button>
+      <button class="btn-stop" onclick="stopDrive()">■ Stop</button>
+      <button onclick="turnRight90()">↻ Right 90°</button>
       <div></div>
-      <button class="btn-bwd" onclick="sendCmd('BACKWARD '+spd())">▼ Backward</button>
-      <button class="btn-emg" onclick="sendCmd('S')">⚡ EMERGENCY</button>
+      <button class="btn-bwd" onclick="driveBackward()">▼ Backward</button>
+      <button class="btn-emg" onclick="emergencyDriveStop()">⚡ EMERGENCY</button>
+    </div>
+    <div style="font-size:.75rem;color:#777;text-align:center;margin-top:8px">
+      Forward/Backward now use closed-loop <code>CMD,v,omega</code> with <code>omega=0</code>
     </div>
 
     <div id="log">—</div>
@@ -417,12 +529,45 @@ canvas{{display:block;width:100%;border-radius:6px;margin-top:6px;background:#0a
     <div class="imu-grid" style="margin-top:10px">
       <div class="imu-cell"><div class="label">Left Wheel Δ Ticks</div><div class="val" id="enc1">—</div></div>
       <div class="imu-cell"><div class="label">Right Wheel Δ Ticks</div><div class="val" id="enc2">—</div></div>
-      <div class="imu-cell"><div class="label">600 Ticks = 1 Rev</div><div class="val" style="color:#888;font-size:.85rem">X1 quadrature</div></div>
+      <div class="imu-cell"><div class="label">Packet Δt (ms)</div><div class="val" id="enc_dt">—</div></div>
+      <div class="imu-cell"><div class="label">Left Total Ticks</div><div class="val" id="enc1_total">—</div></div>
+      <div class="imu-cell"><div class="label">Right Total Ticks</div><div class="val" id="enc2_total">—</div></div>
+      <div class="imu-cell"><div class="label">Left Ticks/s</div><div class="val" id="enc1_tps">—</div></div>
+      <div class="imu-cell"><div class="label">Right Ticks/s</div><div class="val" id="enc2_tps">—</div></div>
+      <div class="imu-cell"><div class="label">Δ Error (L-R)</div><div class="val" id="enc_err">—</div></div>
+      <div class="imu-cell"><div class="label">Δ Error %</div><div class="val" id="enc_err_pct">—</div></div>
+      <div class="imu-cell"><div class="label">Total Error (L-R)</div><div class="val" id="enc_total_err">—</div></div>
     </div>
     <div class="imu-controls" style="margin-top:10px">
       <button onclick="sendCmd('ENC_RESET')" style="background:#123;color:#6af">Reset Counters</button>
       <div style="flex:1;display:flex;align-items:center;justify-content:center;font-size:.8rem;color:#888">
-        Ticks since last IMU packet
+        Live deltas, totals, rates, and left-right mismatch
+      </div>
+    </div>
+  </div>
+
+  <!-- PID Panel -->
+  <div class="card">
+    <h3>Wheel PID Tuning (CMD mode)</h3>
+    <div class="imu-grid" style="margin-top:10px">
+      <div class="imu-cell">
+        <div class="label">Kp</div>
+        <input id="pid_kp" type="number" min="0.0001" step="0.1" value="200.0">
+      </div>
+      <div class="imu-cell">
+        <div class="label">Ki</div>
+        <input id="pid_ki" type="number" min="0" step="0.1" value="35.0">
+      </div>
+      <div class="imu-cell">
+        <div class="label">Kd</div>
+        <input id="pid_kd" type="number" min="0" step="0.1" value="2.5">
+      </div>
+    </div>
+    <div class="imu-controls" style="margin-top:10px">
+      <button onclick="applyPid()">Apply PID</button>
+      <button onclick="refreshPid()">Read PID</button>
+      <div id="pidStatus" style="flex:2;display:flex;align-items:center;justify-content:center;font-size:.8rem;color:#8cf">
+        PID idle
       </div>
     </div>
   </div>
@@ -430,14 +575,34 @@ canvas{{display:block;width:100%;border-radius:6px;margin-top:6px;background:#0a
 </div><!-- /main -->
 
 <script>
-// ── Speed slider
+// ── Speed slider + closed-loop CMD mapping
+let driveSign = 0;  // +1 forward, -1 backward, 0 idle
+
 function spd() {{
   return parseInt(document.getElementById('spd').value || "140", 10);
 }}
+function vmax() {{
+  const v = parseFloat(document.getElementById('vMax').value || "1.0");
+  return Number.isFinite(v) && v > 0 ? v : 1.0;
+}}
+function speedMs() {{
+  return (spd() / 255.0) * vmax();
+}}
+function cmdFromVw(v, omega) {{
+  return 'CMD,' + v.toFixed(3) + ',' + omega.toFixed(3);
+}}
+function onVmaxChange() {{
+  document.getElementById('spdMs').textContent = speedMs().toFixed(3);
+  if (driveSign !== 0) {{
+    sendCmd(cmdFromVw(driveSign * speedMs(), 0), true);
+  }}
+}}
 function onSpeedSlider(v) {{
   document.getElementById('spdVal').textContent = v;
-  // live update speed if motors are running
-  sendCmd('SET_SPEED ' + v, true);
+  document.getElementById('spdMs').textContent = speedMs().toFixed(3);
+  if (driveSign !== 0) {{
+    sendCmd(cmdFromVw(driveSign * speedMs(), 0), true);
+  }}
 }}
 
 // ── Command sender
@@ -457,6 +622,83 @@ async function sendCmd(cmd, silent) {{
   }}
 }}
 
+function driveForward() {{
+  driveSign = 1;
+  sendCmd(cmdFromVw(speedMs(), 0));
+}}
+function driveBackward() {{
+  driveSign = -1;
+  sendCmd(cmdFromVw(-speedMs(), 0));
+}}
+function turnLeft90() {{
+  driveSign = 0;
+  sendCmd('TURN_LEFT_90 ' + spd());
+}}
+function turnRight90() {{
+  driveSign = 0;
+  sendCmd('TURN_RIGHT_90 ' + spd());
+}}
+function stopDrive() {{
+  driveSign = 0;
+  sendCmd('STOP');
+}}
+function emergencyDriveStop() {{
+  driveSign = 0;
+  sendCmd('S');
+}}
+
+// ── PID panel
+async function refreshPid(silent) {{
+  const statusEl = document.getElementById('pidStatus');
+  try {{
+    const r = await fetch('/pid');
+    const j = await r.json();
+    if (!j.ok) {{
+      if (!silent) statusEl.textContent = 'ERR: ' + (j.error || 'PID unavailable');
+      return;
+    }}
+    if (Number.isFinite(j.kp)) document.getElementById('pid_kp').value = j.kp.toFixed(4);
+    if (Number.isFinite(j.ki)) document.getElementById('pid_ki').value = j.ki.toFixed(4);
+    if (Number.isFinite(j.kd)) document.getElementById('pid_kd').value = j.kd.toFixed(4);
+    if (!silent) {{
+      statusEl.textContent = Number.isFinite(j.kp)
+        ? ('PID read: Kp=' + j.kp.toFixed(4) + ', Ki=' + j.ki.toFixed(4) + ', Kd=' + j.kd.toFixed(4))
+        : 'PID not reported yet';
+    }}
+  }} catch (e) {{
+    if (!silent) statusEl.textContent = 'ERR: ' + e;
+  }}
+}}
+
+async function applyPid() {{
+  const kp = parseFloat(document.getElementById('pid_kp').value);
+  const ki = parseFloat(document.getElementById('pid_ki').value);
+  const kd = parseFloat(document.getElementById('pid_kd').value);
+  const statusEl = document.getElementById('pidStatus');
+
+  if (!Number.isFinite(kp) || !Number.isFinite(ki) || !Number.isFinite(kd)) {{
+    statusEl.textContent = 'ERR: PID values must be valid numbers';
+    return;
+  }}
+
+  try {{
+    const r = await fetch('/pid', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{kp: kp, ki: ki, kd: kd}})
+    }});
+    const j = await r.json();
+    if (j.ok) {{
+      statusEl.textContent = 'PID updated.';
+      refreshPid(true);
+    }} else {{
+      statusEl.textContent = 'ERR: ' + (j.error || 'PID update failed');
+    }}
+  }} catch (e) {{
+    statusEl.textContent = 'ERR: ' + e;
+  }}
+}
+
 // ── IMU commands
 function startImu() {{
   const ms = document.getElementById('imuRate').value;
@@ -471,6 +713,10 @@ function readOnce() {{
   startSse();
 }}
 
+function setText(id, value) {{
+  document.getElementById(id).textContent = value;
+}}
+
 // ── SSE connection
 let sse = null;
 function startSse() {{
@@ -478,22 +724,48 @@ function startSse() {{
   sse = new EventSource('/imu');
   sse.onmessage = function(e) {{
     const parts = e.data.split(',');
-        if (parts.length < 9) return;
-    const [ax, ay, az, gx, gy, gz, heading, enc1, enc2] = parts.map(Number);
-    document.getElementById('ax').textContent = ax.toFixed(3);
-    document.getElementById('ay').textContent = ay.toFixed(3);
-    document.getElementById('az').textContent = az.toFixed(3);
-    document.getElementById('gx').textContent = gx.toFixed(2);
-    document.getElementById('gy').textContent = gy.toFixed(2);
-    document.getElementById('gz').textContent = gz.toFixed(2);
-    document.getElementById('heading').textContent = heading.toFixed(1) + '°';
-    drawCompass(heading);
-    pushAccel(ax, ay, az);
-    document.getElementById('enc1').textContent = enc1;
-    document.getElementById('enc2').textContent = enc2;
+    if (parts.length < 10) return;
+    const v = parts.map(Number);
+
+    const ax = v[0], ay = v[1], az = v[2];
+    const gx = v[3], gy = v[4], gz = v[5];
+    const heading = v[6];
+    const enc1Delta = v[7];
+    const enc2Delta = v[8];
+    const dtMs = v[9];
+    const enc1Total = (parts.length > 10) ? v[10] : NaN;
+    const enc2Total = (parts.length > 11) ? v[11] : NaN;
+    const enc1Tps = (parts.length > 12) ? v[12] : ((dtMs > 0) ? (enc1Delta * 1000.0 / dtMs) : NaN);
+    const enc2Tps = (parts.length > 13) ? v[13] : ((dtMs > 0) ? (enc2Delta * 1000.0 / dtMs) : NaN);
+    const encErr = (parts.length > 14) ? v[14] : (enc1Delta - enc2Delta);
+    const denom = Math.max(Math.abs(enc1Delta), Math.abs(enc2Delta));
+    const encErrPct = (parts.length > 15) ? v[15] : ((denom > 0) ? (Math.abs(encErr) * 100.0 / denom) : 0.0);
+    const totalErr = (Number.isFinite(enc1Total) && Number.isFinite(enc2Total)) ? (enc1Total - enc2Total) : NaN;
+
+    setText('ax', Number.isFinite(ax) ? ax.toFixed(3) : '—');
+    setText('ay', Number.isFinite(ay) ? ay.toFixed(3) : '—');
+    setText('az', Number.isFinite(az) ? az.toFixed(3) : '—');
+    setText('gx', Number.isFinite(gx) ? gx.toFixed(2) : '—');
+    setText('gy', Number.isFinite(gy) ? gy.toFixed(2) : '—');
+    setText('gz', Number.isFinite(gz) ? gz.toFixed(2) : '—');
+    setText('heading', Number.isFinite(heading) ? (heading.toFixed(1) + '°') : '—');
+    if (Number.isFinite(heading)) drawCompass(heading);
+    if (Number.isFinite(ax) && Number.isFinite(ay) && Number.isFinite(az)) pushAccel(ax, ay, az);
+
+    setText('enc1', Number.isFinite(enc1Delta) ? String(enc1Delta) : '—');
+    setText('enc2', Number.isFinite(enc2Delta) ? String(enc2Delta) : '—');
+    setText('enc_dt', Number.isFinite(dtMs) ? String(dtMs) : '—');
+    setText('enc1_total', Number.isFinite(enc1Total) ? String(Math.trunc(enc1Total)) : '—');
+    setText('enc2_total', Number.isFinite(enc2Total) ? String(Math.trunc(enc2Total)) : '—');
+    setText('enc1_tps', Number.isFinite(enc1Tps) ? enc1Tps.toFixed(2) : '—');
+    setText('enc2_tps', Number.isFinite(enc2Tps) ? enc2Tps.toFixed(2) : '—');
+    setText('enc_err', Number.isFinite(encErr) ? String(Math.trunc(encErr)) : '—');
+    setText('enc_err_pct', Number.isFinite(encErrPct) ? (encErrPct.toFixed(2) + '%') : '—');
+    setText('enc_total_err', Number.isFinite(totalErr) ? String(Math.trunc(totalErr)) : '—');
   }};
   sse.onerror = function() {{
-    sse.close(); sse = null;
+    sse.close();
+    sse = null;
     setTimeout(startSse, 2000);   // auto-reconnect
   }};
 }}
@@ -565,6 +837,10 @@ function drawAccelChart() {{
   ctx.beginPath(); ctx.moveTo(0, mid); ctx.lineTo(w, mid);
   ctx.strokeStyle = '#333'; ctx.lineWidth = 1; ctx.stroke();
 }}
+
+onVmaxChange();
+refreshPid(true);
+startSse();
 </script>
 </body></html>
 """
@@ -572,32 +848,48 @@ function drawAccelChart() {{
 
 @app.route("/cmd", methods=["POST"])
 def cmd():
-    global ser
     data = request.get_json(silent=True) or {}
     c = str(data.get("cmd", "")).replace("\r", "").replace("\n", "").strip()
     if not c:
         return jsonify({"ok": False, "error": "missing cmd"}), 400
 
-    with ser_lock:
-        s = ser
-    if s is None:
-        if not open_serial():
-            return jsonify({"ok": False, "error": "serial not connected"}), 503
-        with ser_lock:
-            s = ser
+    _ok, payload, status_code = write_serial_command(c)
+    return jsonify(payload), status_code
 
-    if s is None:
-        return jsonify({"ok": False, "error": "serial not connected"}), 503
 
+@app.route("/pid", methods=["GET"])
+def pid_get():
+    with pid_lock:
+        out = dict(pid_data)
+    out["ok"] = True
+    out["age_sec"] = round(time.time() - out["ts"], 2) if out["ts"] else None
+    return jsonify(out)
+
+
+@app.route("/pid", methods=["POST"])
+def pid_set():
+    data = request.get_json(silent=True) or {}
     try:
-        s.write((c + "\n").encode("utf-8"))
-        s.flush()
-        return jsonify({"ok": True, "sent": c})
-    except Exception as e:
-        with ser_lock:
-            ser = None
-        log.warning(f"Serial write failed, port marked dead: {e}")
-        return jsonify({"ok": False, "error": str(e)}), 500
+        kp = float(data.get("kp"))
+        ki = float(data.get("ki"))
+        kd = float(data.get("kd"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "kp, ki, kd must be valid numbers"}), 400
+
+    if kp <= 0.0 or ki < 0.0 or kd < 0.0:
+        return jsonify({"ok": False, "error": "Require kp>0, ki>=0, kd>=0"}), 400
+
+    cmd_line = f"PID_SET,{kp:.4f},{ki:.4f},{kd:.4f}"
+    ok, payload, status_code = write_serial_command(cmd_line)
+    if not ok:
+        return jsonify(payload), status_code
+
+    with pid_lock:
+        pid_data.update({"kp": kp, "ki": ki, "kd": kd, "ts": time.time()})
+        out = dict(pid_data)
+    out["ok"] = True
+    out["sent"] = cmd_line
+    return jsonify(out), 200
 
 
 @app.route("/imu")
@@ -656,10 +948,20 @@ def snapshot():
 def status():
     with imu_lock:
         imu_age = round(time.time() - imu_data["ts"], 2) if imu_data["ts"] else None
-        enc1_total = imu_data.get("enc1", 0)
-        enc2_total = imu_data.get("enc2", 0)
+        enc1_delta = imu_data.get("enc1_delta", imu_data.get("enc1", 0))
+        enc2_delta = imu_data.get("enc2_delta", imu_data.get("enc2", 0))
+        enc1_total = imu_data.get("enc1_total", 0)
+        enc2_total = imu_data.get("enc2_total", 0)
+        enc1_tps = imu_data.get("enc1_tps", 0.0)
+        enc2_tps = imu_data.get("enc2_tps", 0.0)
+        enc_delta_err = imu_data.get("enc_delta_err", 0)
+        enc_delta_err_pct = imu_data.get("enc_delta_err_pct", 0.0)
+        enc_total_err = imu_data.get("enc_total_err", 0)
+        dt_ms = imu_data.get("dt_ms", 0)
     with ser_lock:
         connected = ser is not None
+    with pid_lock:
+        pid = dict(pid_data)
     return jsonify({
         "running": camera.running if camera else False,
         "fps_capture": camera.fps_capture if camera else 0.0,
@@ -676,8 +978,17 @@ def status():
         "serial_connected": connected,
         "imu_last_age_sec": imu_age,
         "imu_sse_subscribers": len(imu_subscribers),
+        "enc1_delta_ticks": enc1_delta,
+        "enc2_delta_ticks": enc2_delta,
         "enc1_total_ticks": enc1_total,
-        "enc2_total_ticks": enc2_total
+        "enc2_total_ticks": enc2_total,
+        "enc1_ticks_per_sec": enc1_tps,
+        "enc2_ticks_per_sec": enc2_tps,
+        "enc_packet_dt_ms": dt_ms,
+        "enc_delta_error_ticks": enc_delta_err,
+        "enc_delta_error_pct": enc_delta_err_pct,
+        "enc_total_error_ticks": enc_total_err,
+        "pid": pid
     })
 
 
@@ -713,6 +1024,7 @@ if __name__ == "__main__":
     print(f"    http://{ip}:{PORT}/snapshot")
     print(f"    http://{ip}:{PORT}/imu         (SSE stream)")
     print(f"    http://{ip}:{PORT}/imu/snapshot (JSON)")
+    print(f"    http://{ip}:{PORT}/pid         (PID JSON)")
     print(f"    http://{ip}:{PORT}/status\n")
 
     app.run(host=HOST, port=PORT, threaded=True, debug=False, use_reloader=False)

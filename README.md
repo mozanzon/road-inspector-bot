@@ -189,6 +189,8 @@ Send commands to the Arduino via serial (115200 baud, 8N1):
 | `STOP` | Stop motors |
 | `S` | Emergency stop (immediate cutoff) |
 | `CMD,<v_m/s>,<omega_rad/s>` | Differential-drive command for autonomy stack |
+| `PID_SET,<kp>,<ki>,<kd>` | Update wheel PID gains at runtime (`kp>0, ki>=0, kd>=0`) |
+| `PID_GET` | Read current wheel PID gains |
 | `IMU_STREAM [interval_ms]` | Start continuous IMU data streaming (default: 100ms / 10 Hz) |
 | `IMU_STOP` | Stop IMU streaming |
 | `IMU_READ` | One-shot IMU data read |
@@ -200,6 +202,8 @@ FORWARD 150
 SET_SPEED 200
 TURN_LEFT_90 100
 CMD,0.50,0.20
+PID_SET,210.0,32.0,2.8
+PID_GET
 IMU_STREAM 50
 S
 ```
@@ -210,7 +214,7 @@ Access the dashboard at `http://<pi-ip>:8080/`
 
 **Motor Control Panel:**
 - **Speed Slider:** Adjust speed from 40-255 in real-time
-- **Direction Buttons:** Forward, Backward, Left/Right 90° turns
+- **Direction Buttons:** Forward/Backward use closed-loop `CMD,v,omega` (`omega=0`), Left/Right remain 90° heading turns
 - **Emergency Button:** Immediate motor cutoff
 
 **IMU Panel:**
@@ -229,16 +233,21 @@ Access the dashboard at `http://<pi-ip>:8080/`
 | `/snapshot` | GET | Single JPEG frame |
 | `/imu` | GET | Server-Sent Events (SSE) stream for IMU data |
 | `/imu/snapshot` | GET | Latest IMU reading as JSON |
+| `/pid` | GET | Latest PID gains cache (`kp`, `ki`, `kd`) |
+| `/pid` | POST | Update PID gains (`{"kp":..., "ki":..., "kd":...}`) |
 | `/status` | GET | System status (FPS, connections, etc.) |
 | `/cmd` | POST | Send serial command to Arduino |
 
 **Example API Usage:**
 ```bash
 # Send motor command
-curl -X POST http://<pi-ip>:8080/cmd -H "Content-Type: application/json" -d '{"cmd":"FORWARD 150"}'
+curl -X POST http://<pi-ip>:8080/cmd -H "Content-Type: application/json" -d '{"cmd":"CMD,0.55,0.00"}'
 
 # Get IMU snapshot
 curl http://<pi-ip>:8080/imu/snapshot
+
+# Set PID gains
+curl -X POST http://<pi-ip>:8080/pid -H "Content-Type: application/json" -d '{"kp":210.0,"ki":32.0,"kd":2.8}'
 
 # Check system status
 curl http://<pi-ip>:8080/status
@@ -315,17 +324,18 @@ road-inspector-bot/
 
 **Serial CSV Format:**
 ```
-IMU,ax,ay,az,gx,gy,gz,heading,enc1_delta,enc2_delta,dt_ms
+IMU,ax,ay,az,gx,gy,gz,heading,enc1_delta,enc2_delta,dt_ms,enc1_total,enc2_total
 ```
 - `ax, ay, az`: Accelerometer (g-force, 3 decimal places)
 - `gx, gy, gz`: Gyroscope (°/s, 3 decimal places)
 - `heading`: Compass heading (degrees, 2 decimal places, 0-360°)
 - `enc1_delta, enc2_delta`: Encoder tick deltas since previous IMU packet
 - `dt_ms`: Packet delta-time in milliseconds
+- `enc1_total, enc2_total`: Absolute encoder counts since reset
 
 **SSE Stream Format:**
 ```
-data: 0.123,-0.456,9.812,0.010,-0.020,0.005,180.50,12,11,50
+data: 0.123,-0.456,9.812,0.010,-0.020,0.005,180.50,12,11,50,1012,1006,240.00,220.00,1,8.33
 
 ```
 
