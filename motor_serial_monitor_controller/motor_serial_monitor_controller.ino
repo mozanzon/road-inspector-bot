@@ -20,8 +20,6 @@ const float WHEEL_RADIUS_M = WHEEL_DIAMETER_M / 2.0;
 const float TICKS_PER_REV  = 600.0; // encoder ticks per revolution (verify by measurement)
 
 // Per-wheel trim factors to compensate hardware speed mismatch
-// Calibrate: FORWARD 200, observe which wheel runs faster,
-// reduce its trim via TRIM,left,right command (e.g. TRIM,1.0,0.92)
 float leftTrim  = 1.0;
 float rightTrim = 1.0;
 
@@ -33,7 +31,7 @@ float pidKd = 2.5;
 const float PID_INTEGRAL_LIMIT = 2.0;
 const float PID_TARGET_DEADBAND_MS = 0.01;
 
-// ── Heading PID for accurate turns (replaces bang-bang spin)
+// ── Heading PID for accurate turns
 float turnKp = 3.0;
 float turnKi = 0.05;
 float turnKd = 0.8;
@@ -46,7 +44,7 @@ int currentDir   = 0; // 1=fwd, -1=back, 0=stop
 
 // ── IMU streaming state
 bool imuStreaming = false;
-unsigned long imuInterval = 100;   // ms between IMU packets (default 10 Hz)
+unsigned long imuInterval = 500;   // ms between packets (2 Hz for readable Serial Monitor)
 unsigned long lastImuTime  = 0;    // previous IMU packet timestamp (for dt_ms field)
 unsigned long lastImuSchedule = 0; // scheduler timestamp for periodic streaming
 const float IMU_FRAME_ROTATION_DEG = 90.0;  // +90° IMU->robot frame alignment
@@ -86,7 +84,7 @@ unsigned long turnStepStart    = 0;   // for ramp-down settle timing
 unsigned long turnSpinStart    = 0;   // absolute start of spinning (for timeout)
 unsigned long turnLastCheck    = 0;   // last heading check time (for 10ms interval)
 unsigned long turnTimeout      = 10000;
-const float TURN_HEADING_TOL = 2.0;  // tightened for PID-controlled turns
+const float TURN_HEADING_TOL = 2.0;
 float turnIntegral  = 0.0;
 float turnPrevError = 0.0;
 const unsigned long TURN_MIN_SPIN_MS = 80;
@@ -354,9 +352,8 @@ float angleDiffDeg(float fromDeg, float toDeg) {
   return d;
 }
 
-// Send combined IMU + Encoder packet over Serial as a single CSV line:
-// IMU,ax,ay,az,gx,gy,gz,heading,enc1_delta,enc2_delta,dt_ms,enc1_total,enc2_total
-void sendImuPacket() {
+// Send human-readable telemetry for Serial Monitor debugging
+void sendFormattedPacket() {
   float ax, ay, az, gx, gy, gz;
   fabo_9axis.readAccelXYZ(&ax, &ay, &az);
   rotateImuFrameXY(ax, ay);
@@ -364,7 +361,6 @@ void sendImuPacket() {
   rotateImuFrameXY(gx, gy);
   float heading = readHeadingDeg();
 
-  // Atomic encoder snapshot + delta calculation
   noInterrupts();
   long c1 = encoder1_count;
   long c2 = encoder2_count;
@@ -378,19 +374,57 @@ void sendImuPacket() {
   unsigned long dtMs = now - lastImuTime;
   lastImuTime = now;
 
-  Serial.print("IMU,");
-  Serial.print(ax, 3); Serial.print(",");
-  Serial.print(ay, 3); Serial.print(",");
-  Serial.print(az, 3); Serial.print(",");
-  Serial.print(gx, 3); Serial.print(",");
-  Serial.print(gy, 3); Serial.print(",");
-  Serial.print(gz, 3); Serial.print(",");
-  Serial.print(heading, 2); Serial.print(",");
-  Serial.print(enc1_delta); Serial.print(",");
-  Serial.print(enc2_delta); Serial.print(",");
-  Serial.print(dtMs); Serial.print(",");
-  Serial.print(c1); Serial.print(",");
-  Serial.println(c2);
+  float dtSec = dtMs / 1000.0;
+  float enc1_tps = (dtSec > 0) ? (enc1_delta / dtSec) : 0.0;
+  float enc2_tps = (dtSec > 0) ? (enc2_delta / dtSec) : 0.0;
+  float wheelCirc = 2.0 * PI * WHEEL_RADIUS_M;
+  float enc1_ms = (enc1_tps / TICKS_PER_REV) * wheelCirc;
+  float enc2_ms = (enc2_tps / TICKS_PER_REV) * wheelCirc;
+  int errD = enc1_delta - enc2_delta;
+  int denom = max(abs(enc1_delta), abs(enc2_delta));
+  float errPct = (denom > 0) ? (abs(errD) * 100.0 / denom) : 0.0;
+
+  const char* dirStr = (currentDir == 1) ? "FWD" : (currentDir == -1) ? "BWD" : "STOP";
+  const char* trnStr = (turnState == TURN_IDLE) ? "Idle" :
+                       (turnState == TURN_SPINNING) ? "Spinning" :
+                       (turnState == TURN_SETTLE) ? "Settling" : "Other";
+
+  Serial.println("== IMU ============================");
+  Serial.print("  Accel(g)  X:"); Serial.print(ax, 3);
+  Serial.print("  Y:"); Serial.print(ay, 3);
+  Serial.print("  Z:"); Serial.println(az, 3);
+  Serial.print("  Gyro(d/s) X:"); Serial.print(gx, 2);
+  Serial.print("  Y:"); Serial.print(gy, 2);
+  Serial.print("  Z:"); Serial.println(gz, 2);
+  Serial.print("  Heading:  "); Serial.print(heading, 1); Serial.println(" deg");
+  Serial.println("== Encoders =======================");
+  Serial.print("  L d:"); Serial.print(enc1_delta);
+  Serial.print("  tot:"); Serial.print(c1);
+  Serial.print("  "); Serial.print(enc1_tps, 1); Serial.print("t/s ");
+  Serial.print(enc1_ms, 3); Serial.println("m/s");
+  Serial.print("  R d:"); Serial.print(enc2_delta);
+  Serial.print("  tot:"); Serial.print(c2);
+  Serial.print("  "); Serial.print(enc2_tps, 1); Serial.print("t/s ");
+  Serial.print(enc2_ms, 3); Serial.println("m/s");
+  Serial.print("  Err:"); Serial.print(errD);
+  Serial.print(" ("); Serial.print(errPct, 1); Serial.println("%)");
+  Serial.println("== Status =========================");
+  Serial.print("  dt:"); Serial.print(dtMs); Serial.print("ms");
+  Serial.print("  Dir:"); Serial.print(dirStr);
+  Serial.print("  PWM:"); Serial.println(currentSpeed);
+  Serial.print("  Turn:"); Serial.print(trnStr);
+  if (turnState == TURN_SPINNING) {
+    Serial.print(" "); Serial.print(turnProgressDeg, 1);
+    Serial.print("/"); Serial.print(turnRequestedDeg, 0); Serial.print("deg");
+  }
+  Serial.println();
+  Serial.print("  Trim L:"); Serial.print(leftTrim, 3);
+  Serial.print(" R:"); Serial.println(rightTrim, 3);
+  Serial.print("  TurnPID Kp:"); Serial.print(turnKp, 2);
+  Serial.print(" Ki:"); Serial.print(turnKi, 2);
+  Serial.print(" Kd:"); Serial.println(turnKd, 2);
+  Serial.println("===================================");
+  Serial.println();
 }
 
 void sendPidPacket() {
@@ -443,7 +477,6 @@ bool turnTick() {
       return true;
 
     case TURN_SPINNING: {
-      // Heading PID — check every ~10ms
       if (now - turnLastCheck < 10) return true;
       turnLastCheck = now;
 
@@ -464,8 +497,7 @@ bool turnTick() {
 
       if ((reachedTarget || withinTol) && (now - turnSpinStart >= TURN_MIN_SPIN_MS)) {
         stopMotors();
-        turnIntegral = 0.0;
-        turnPrevError = 0.0;
+        turnIntegral = 0.0; turnPrevError = 0.0;
         Serial.print("Turn complete. End heading: "); Serial.println(nowH);
         Serial.print("Turn progress: "); Serial.print(turnProgressDeg, 1); Serial.println(" deg");
         turnState = TURN_DONE;
@@ -474,14 +506,12 @@ bool turnTick() {
 
       if (now - turnSpinStart > turnTimeout) {
         stopMotors();
-        turnIntegral = 0.0;
-        turnPrevError = 0.0;
+        turnIntegral = 0.0; turnPrevError = 0.0;
         Serial.println("Turn timeout.");
         turnState = TURN_DONE;
         return false;
       }
 
-      // ── Heading PID: modulate spin speed from remaining degrees
       float dtSec = 0.01;
       float error = remainingDeg;
       turnIntegral += error * dtSec;
@@ -618,69 +648,43 @@ void handleCommand(String cmd) {
     return;
   }
 
-  // PID_GET — report current PID gains
+  // PID_GET
   if (cmd == "PID_GET" || cmd == "pid_get") {
     sendPidPacket();
     return;
   }
 
-  // TRIM,left,right — set per-wheel PWM trim factors
+  // TRIM,left,right
   if (cmd.startsWith("TRIM,") || cmd.startsWith("trim,")) {
     int c1 = cmd.indexOf(',');
     int c2 = cmd.indexOf(',', c1 + 1);
-    if (c1 < 0 || c2 < 0) {
-      Serial.println("ERROR: format is TRIM,left,right (e.g. TRIM,1.0,0.92)");
-      return;
-    }
-    float newL = cmd.substring(c1 + 1, c2).toFloat();
-    float newR = cmd.substring(c2 + 1).toFloat();
-    if (newL < 0.5 || newL > 1.5 || newR < 0.5 || newR > 1.5) {
-      Serial.println("ERROR: Trim must be 0.5–1.5");
-      return;
-    }
-    leftTrim = newL;
-    rightTrim = newR;
-    Serial.print("TRIM,"); Serial.print(leftTrim, 3);
-    Serial.print(","); Serial.println(rightTrim, 3);
+    if (c1 < 0 || c2 < 0) { Serial.println("ERROR: TRIM,left,right"); return; }
+    float nL = cmd.substring(c1+1, c2).toFloat();
+    float nR = cmd.substring(c2+1).toFloat();
+    if (nL<0.5||nL>1.5||nR<0.5||nR>1.5) { Serial.println("ERROR: 0.5-1.5"); return; }
+    leftTrim = nL; rightTrim = nR;
+    Serial.print("TRIM,"); Serial.print(leftTrim,3); Serial.print(","); Serial.println(rightTrim,3);
     return;
   }
-
-  // TRIM_GET — report current trim
   if (cmd == "TRIM_GET" || cmd == "trim_get") {
-    Serial.print("TRIM,"); Serial.print(leftTrim, 3);
-    Serial.print(","); Serial.println(rightTrim, 3);
+    Serial.print("TRIM,"); Serial.print(leftTrim,3); Serial.print(","); Serial.println(rightTrim,3);
     return;
   }
 
-  // TURN_SET,kp,ki,kd — tune heading PID for turns
+  // TURN_SET,kp,ki,kd
   if (cmd.startsWith("TURN_SET,") || cmd.startsWith("turn_set,")) {
-    int c1 = cmd.indexOf(',');
-    int c2 = cmd.indexOf(',', c1 + 1);
-    int c3 = cmd.indexOf(',', c2 + 1);
-    if (c1 < 0 || c2 < 0 || c3 < 0) {
-      Serial.println("ERROR: TURN_SET,kp,ki,kd");
-      return;
-    }
-    float nKp = cmd.substring(c1 + 1, c2).toFloat();
-    float nKi = cmd.substring(c2 + 1, c3).toFloat();
-    float nKd = cmd.substring(c3 + 1).toFloat();
-    if (nKp <= 0.0 || nKi < 0.0 || nKd < 0.0) {
-      Serial.println("ERROR: kp>0, ki>=0, kd>=0");
-      return;
-    }
-    turnKp = nKp; turnKi = nKi; turnKd = nKd;
-    turnIntegral = 0.0; turnPrevError = 0.0;
-    Serial.print("TURN_PID,"); Serial.print(turnKp, 4);
-    Serial.print(","); Serial.print(turnKi, 4);
-    Serial.print(","); Serial.println(turnKd, 4);
+    int c1=cmd.indexOf(','); int c2=cmd.indexOf(',',c1+1); int c3=cmd.indexOf(',',c2+1);
+    if (c1<0||c2<0||c3<0) { Serial.println("ERROR: TURN_SET,kp,ki,kd"); return; }
+    float nKp=cmd.substring(c1+1,c2).toFloat();
+    float nKi=cmd.substring(c2+1,c3).toFloat();
+    float nKd=cmd.substring(c3+1).toFloat();
+    if (nKp<=0||nKi<0||nKd<0) { Serial.println("ERROR: kp>0"); return; }
+    turnKp=nKp; turnKi=nKi; turnKd=nKd; turnIntegral=0; turnPrevError=0;
+    Serial.print("TURN_PID,"); Serial.print(turnKp,4); Serial.print(","); Serial.print(turnKi,4); Serial.print(","); Serial.println(turnKd,4);
     return;
   }
-
-  // TURN_GET — report heading PID gains
   if (cmd == "TURN_GET" || cmd == "turn_get") {
-    Serial.print("TURN_PID,"); Serial.print(turnKp, 4);
-    Serial.print(","); Serial.print(turnKi, 4);
-    Serial.print(","); Serial.println(turnKd, 4);
+    Serial.print("TURN_PID,"); Serial.print(turnKp,4); Serial.print(","); Serial.print(turnKi,4); Serial.print(","); Serial.println(turnKd,4);
     return;
   }
 
@@ -805,12 +809,10 @@ void handleCommand(String cmd) {
   Serial.println("  FORWARD <0-255>  | BACKWARD <0-255>");
   Serial.println("  SET_SPEED <0-255> | STOP | S");
   Serial.println("  TURN_LEFT_90 <1-255> | TURN_RIGHT_90 <1-255>");
-  Serial.println("  CMD,<v>,<omega>   — differential drive");
-  Serial.println("  TRIM,<left>,<right> | TRIM_GET");
-  Serial.println("  PID_SET,<kp>,<ki>,<kd> | PID_GET");
-  Serial.println("  TURN_SET,<kp>,<ki>,<kd> | TURN_GET");
-  Serial.println("  IMU_STREAM [ms] | IMU_STOP | IMU_READ");
-  Serial.println("  ENC_RESET");
+  Serial.println("  CMD,<v>,<omega>   | TRIM,<L>,<R> | TRIM_GET");
+  Serial.println("  PID_SET,kp,ki,kd  | PID_GET");
+  Serial.println("  TURN_SET,kp,ki,kd | TURN_GET");
+  Serial.println("  IMU_STREAM [ms] | IMU_STOP | IMU_READ | ENC_RESET");;
 }
 
 void setup() {
@@ -844,10 +846,11 @@ void setup() {
     while (1);
   }
 
-  // ── Auto-start IMU streaming for autonomous/EKF operation
+  // ── Auto-start IMU streaming for Serial Monitor telemetry
   imuStreaming = true;
   lastImuTime = millis();
   lastImuSchedule = lastImuTime;
+  Serial.println("Serial Monitor controller mode.");
   Serial.print("IMU streaming auto-started @ ");
   Serial.print(imuInterval);
   Serial.println(" ms");
@@ -862,7 +865,7 @@ void loop() {
     unsigned long now = millis();
     if (now - lastImuSchedule >= imuInterval) {
       lastImuSchedule = now;
-      sendImuPacket();
+      sendFormattedPacket();
     }
   }
 

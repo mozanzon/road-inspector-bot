@@ -41,10 +41,10 @@ The robot has three core tasks:
 **Confirmed working files in repo (branch: feature/encoder-imu-gps-control):**
 
 `motor_imu_controller.ino` (Arduino Mega):
-- IMU streaming at configurable rate (default 100ms, target 20ms/50Hz)
+- IMU streaming at configurable rate (default 100ms, target 20ms/50Hz), with +90° Z-frame rotation for robot-frame aligned telemetry
 - Encoder ISRs with atomic snapshot and delta calculation
 - Non-blocking ramp state machine for FORWARD/BACKWARD
-- Non-blocking turn state machine using magnetometer heading (90° turns)
+- Non-blocking turn state machine using magnetometer heading; TURN_LEFT_90/TURN_RIGHT_90 track relative heading change from turn start and stop at 90° within tolerance
 - BTS7960 motor control primitives
 - Serial protocol — sends: IMU,ax,ay,az,gx,gy,gz,heading,enc1_delta,enc2_delta,dt_ms
 - Serial protocol — receives: CMD,v_linear,omega | FORWARD n | BACKWARD n | STOP | S | IMU_STREAM n | IMU_STOP | ENC_RESET | TURN_LEFT_90 n | TURN_RIGHT_90 n
@@ -118,7 +118,8 @@ then scales to PWM 0–255
 
 **Robot physical parameters (to be measured and tuned):**
 - TICKS_PER_REV: needs measurement (rotate wheel 1 full turn, count ticks)
-- WHEEL_RADIUS: ~0.05m (needs verification)
+- WHEEL_DIAMETER: 0.32m (32 cm confirmed)
+- WHEEL_RADIUS: 0.16m (derived from diameter)
 - WHEELBASE: ~0.30m centre-to-centre (needs verification)
 - MAX_RAD_S: no-load wheel angular velocity at PWM=255 (needs measurement)
 

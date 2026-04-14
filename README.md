@@ -49,7 +49,7 @@ Road Inspector Bot is a Raspberry Pi + Arduino mobile robot platform designed fo
 - **Differential drive** with independent left/right motor channels
 - **Smooth ramping** for acceleration/deceleration (50 steps over 800ms)
 - **Emergency stop** with immediate motor cutoff
-- **IMU-assisted heading control** — relative 90° left/right turns
+- **IMU-assisted heading control** — relative 90° left/right turns that track turn progress from start and stop within heading tolerance
 - **Dynamic speed adjustment** via `SET_SPEED` command without changing direction
 
 ### IMU Telemetry
@@ -57,6 +57,7 @@ Road Inspector Bot is a Raspberry Pi + Arduino mobile robot platform designed fo
 - **Configurable streaming** from 2 Hz to 50 Hz (adjustable interval)
 - **One-shot reads** for on-demand sensor snapshots
 - **Compass heading calculation** from magnetometer data
+- **Robot-frame aligned output** — IMU telemetry is rotated +90° around Z before publish
 - **Real-time visualization**: compass gauge, accelerometer rolling chart
 
 ### Vision System
@@ -116,7 +117,7 @@ Pi USB → Arduino USB-B (serial communication @ 115200 baud)
 
 ## Software Dependencies
 
-### Arduino (motor_imu_controller.ino)
+### Arduino (`motor_imu_controller.ino` / `motor_serial_monitor_controller.ino`)
 - [FaBo9Axis_MPU9250 Library](https://github.com/FaBoPlatform/FaBo9AXIS-MPU9250-Library) — Install via Arduino Library Manager
 - Standard Arduino Wire library (included in Arduino IDE)
 
@@ -137,7 +138,9 @@ pip3 install opencv-python flask pyserial
 ### 1. Arduino Setup
 
 1. Install the **FaBo9Axis_MPU9250** library via Arduino IDE → Sketch → Include Library → Manage Libraries
-2. Upload `motor_imu_controller/motor_imu_controller.ino` to your Arduino Mega
+2. Upload one firmware option to your Arduino Mega:
+   - `motor_imu_controller/motor_imu_controller.ino` (Pi + web dashboard workflow)
+   - `motor_serial_monitor_controller/motor_serial_monitor_controller.ino` (standalone Serial Monitor workflow)
 3. Open Serial Monitor (115200 baud) to verify initialization:
    ```
    configuring 9axis...
@@ -175,6 +178,9 @@ pip3 install opencv-python flask pyserial
 
 ## Usage
 
+If you want direct manual control from Arduino Serial Monitor (without Flask dashboard), use:
+- `motor_serial_monitor_controller/motor_serial_monitor_controller.ino`
+
 ### Serial Command Reference
 
 Send commands to the Arduino via serial (115200 baud, 8N1):
@@ -184,11 +190,13 @@ Send commands to the Arduino via serial (115200 baud, 8N1):
 | `FORWARD <0-255>` | Move forward with ramp-up to specified speed |
 | `BACKWARD <0-255>` | Move backward with ramp-up to specified speed |
 | `SET_SPEED <0-255>` | Update current motor speed without changing direction |
-| `TURN_LEFT_90 <1-255>` | Relative left 90° turn using compass heading |
-| `TURN_RIGHT_90 <1-255>` | Relative right 90° turn using compass heading |
+| `TURN_LEFT_90 <1-255>` | Relative left turn that tracks heading change from start and stops at 90° within tolerance |
+| `TURN_RIGHT_90 <1-255>` | Relative right turn that tracks heading change from start and stops at 90° within tolerance |
 | `STOP` | Stop motors |
 | `S` | Emergency stop (immediate cutoff) |
 | `CMD,<v_m/s>,<omega_rad/s>` | Differential-drive command for autonomy stack |
+| `PID_SET,<kp>,<ki>,<kd>` | Update wheel PID gains at runtime (`kp>0, ki>=0, kd>=0`) |
+| `PID_GET` | Read current wheel PID gains |
 | `IMU_STREAM [interval_ms]` | Start continuous IMU data streaming (default: 100ms / 10 Hz) |
 | `IMU_STOP` | Stop IMU streaming |
 | `IMU_READ` | One-shot IMU data read |
@@ -200,6 +208,8 @@ FORWARD 150
 SET_SPEED 200
 TURN_LEFT_90 100
 CMD,0.50,0.20
+PID_SET,210.0,32.0,2.8
+PID_GET
 IMU_STREAM 50
 S
 ```
@@ -210,7 +220,7 @@ Access the dashboard at `http://<pi-ip>:8080/`
 
 **Motor Control Panel:**
 - **Speed Slider:** Adjust speed from 40-255 in real-time
-- **Direction Buttons:** Forward, Backward, Left/Right 90° turns
+- **Direction Buttons:** Forward/Backward use closed-loop `CMD,v,omega` (`omega=0`), Left/Right remain 90° heading turns
 - **Emergency Button:** Immediate motor cutoff
 
 **IMU Panel:**
@@ -229,16 +239,21 @@ Access the dashboard at `http://<pi-ip>:8080/`
 | `/snapshot` | GET | Single JPEG frame |
 | `/imu` | GET | Server-Sent Events (SSE) stream for IMU data |
 | `/imu/snapshot` | GET | Latest IMU reading as JSON |
+| `/pid` | GET | Latest PID gains cache (`kp`, `ki`, `kd`) |
+| `/pid` | POST | Update PID gains (`{"kp":..., "ki":..., "kd":...}`) |
 | `/status` | GET | System status (FPS, connections, etc.) |
 | `/cmd` | POST | Send serial command to Arduino |
 
 **Example API Usage:**
 ```bash
 # Send motor command
-curl -X POST http://<pi-ip>:8080/cmd -H "Content-Type: application/json" -d '{"cmd":"FORWARD 150"}'
+curl -X POST http://<pi-ip>:8080/cmd -H "Content-Type: application/json" -d '{"cmd":"CMD,0.55,0.00"}'
 
 # Get IMU snapshot
 curl http://<pi-ip>:8080/imu/snapshot
+
+# Set PID gains
+curl -X POST http://<pi-ip>:8080/pid -H "Content-Type: application/json" -d '{"kp":210.0,"ki":32.0,"kd":2.8}'
 
 # Check system status
 curl http://<pi-ip>:8080/status
@@ -255,6 +270,8 @@ http://<pi-ip>:8080/stream
 ```cpp
 const int RAMP_STEPS = 50;              // Number of ramp steps for smooth acceleration
 const unsigned long RAMP_TIME = 800;    // Total ramp time in milliseconds
+const float WHEEL_DIAMETER_M = 0.32;    // Wheel diameter in meters (32 cm)
+const float WHEEL_RADIUS_M = WHEEL_DIAMETER_M / 2.0;
 unsigned long imuInterval = 100;        // Default IMU streaming interval (ms)
 const float TURN_HEADING_TOL = 5.0;     // Heading tolerance in degrees for turn-to-heading
 unsigned long turnTimeout = 10000;      // Turn timeout in milliseconds
@@ -272,6 +289,24 @@ HOST          = "0.0.0.0"# Bind address
 SERIAL_PORT   = "/dev/ttyACM0"  # Arduino serial port
 SERIAL_BAUD   = 115200   # Serial baud rate
 ```
+
+## Hardware Verification Checklist (Controller Changes)
+
+Use this checklist after firmware/controller updates:
+
+- [ ] **Validate 90° turns at multiple speeds**
+  - Run `TURN_LEFT_90` and `TURN_RIGHT_90` at low/medium/high speeds (for example: `80`, `150`, `220`).
+  - Confirm each turn settles near 90° and does **not** continue into an extra full rotation.
+- [ ] **Validate immediate motion commands after turns**
+  - Immediately send `FORWARD <speed>` and `BACKWARD <speed>` after a completed turn.
+  - Confirm movement starts without reset, power-cycle, or reinitialization.
+- [ ] **Validate IMU telemetry CSV shape and continuity**
+  - Confirm packets stay in this exact field order:
+    `IMU,ax,ay,az,gx,gy,gz,heading,enc1_delta,enc2_delta,dt_ms,enc1_total,enc2_total`
+  - Confirm fields are not dropped/reordered and stream timing/counters remain continuous during motion.
+- [ ] **Validate wheel geometry assumption in behavior/calibration notes**
+  - Confirm behavior and calibration notes reflect `WHEEL_DIAMETER_M = 0.32` (32 cm) and `WHEEL_RADIUS_M = 0.16 m`.
+  - If observed travel/turn behavior disagrees, update calibration notes and constants together.
 
 ## Troubleshooting
 
@@ -304,6 +339,8 @@ SERIAL_BAUD   = 115200   # Serial baud rate
 road-inspector-bot/
 ├── motor_imu_controller/
 │   └── motor_imu_controller.ino    # Arduino firmware (motor + IMU + encoders)
+├── motor_serial_monitor_controller/
+│   └── motor_serial_monitor_controller.ino  # Standalone Serial Monitor controller + telemetry
 ├── Encoder_draft1/
 │   └── Encoder_draft1.ino          # Legacy standalone encoder test
 ├── vision_control_server.py    # Raspberry Pi server (vision + web UI + serial bridge)
@@ -315,17 +352,18 @@ road-inspector-bot/
 
 **Serial CSV Format:**
 ```
-IMU,ax,ay,az,gx,gy,gz,heading,enc1_delta,enc2_delta,dt_ms
+IMU,ax,ay,az,gx,gy,gz,heading,enc1_delta,enc2_delta,dt_ms,enc1_total,enc2_total
 ```
 - `ax, ay, az`: Accelerometer (g-force, 3 decimal places)
 - `gx, gy, gz`: Gyroscope (°/s, 3 decimal places)
-- `heading`: Compass heading (degrees, 2 decimal places, 0-360°)
+- `heading`: Compass heading after +90° Z-frame rotation for robot-frame alignment (degrees, 2 decimal places, 0-360°)
 - `enc1_delta, enc2_delta`: Encoder tick deltas since previous IMU packet
 - `dt_ms`: Packet delta-time in milliseconds
+- `enc1_total, enc2_total`: Absolute encoder counts since reset
 
 **SSE Stream Format:**
 ```
-data: 0.123,-0.456,9.812,0.010,-0.020,0.005,180.50,12,11,50
+data: 0.123,-0.456,9.812,0.010,-0.020,0.005,180.50,12,11,50,1012,1006,240.00,220.00,1,8.33
 
 ```
 
