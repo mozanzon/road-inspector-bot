@@ -19,6 +19,12 @@ const float WHEEL_DIAMETER_M = 0.32;  // wheel diameter in meters (32 cm, confir
 const float WHEEL_RADIUS_M = WHEEL_DIAMETER_M / 2.0;
 const float TICKS_PER_REV  = 600.0; // encoder ticks per revolution (verify by measurement)
 
+// Per-wheel trim factors to compensate hardware speed mismatch
+// Calibrate: FORWARD 200, observe which wheel runs faster,
+// reduce its trim via TRIM,left,right command (e.g. TRIM,1.0,0.92)
+float leftTrim  = 1.0;
+float rightTrim = 1.0;
+
 // ── Wheel PID control (closed-loop speed control for CMD,v,omega)
 const unsigned long PID_INTERVAL_MS = 20;  // 50 Hz
 float pidKp = 200.0;
@@ -26,6 +32,14 @@ float pidKi = 35.0;
 float pidKd = 2.5;
 const float PID_INTEGRAL_LIMIT = 2.0;
 const float PID_TARGET_DEADBAND_MS = 0.01;
+
+// ── Heading PID for accurate turns (replaces bang-bang spin)
+float turnKp = 3.0;
+float turnKi = 0.05;
+float turnKd = 0.8;
+const float TURN_INTEGRAL_LIMIT = 50.0;
+const int   TURN_MIN_PWM = 60;
+const int   TURN_MAX_PWM = 180;
 
 int currentSpeed = 0;
 int currentDir   = 0; // 1=fwd, -1=back, 0=stop
@@ -72,7 +86,9 @@ unsigned long turnStepStart    = 0;   // for ramp-down settle timing
 unsigned long turnSpinStart    = 0;   // absolute start of spinning (for timeout)
 unsigned long turnLastCheck    = 0;   // last heading check time (for 10ms interval)
 unsigned long turnTimeout      = 10000;
-const float TURN_HEADING_TOL = 5.0;
+const float TURN_HEADING_TOL = 2.0;  // tightened for PID-controlled turns
+float turnIntegral  = 0.0;
+float turnPrevError = 0.0;
 const unsigned long TURN_MIN_SPIN_MS = 80;
 
 // ── Non-blocking ramp state machine (for FORWARD/BACKWARD)
@@ -151,13 +167,17 @@ void cancelTurnAndRampForDriveCommand() {
 }
 
 void setForward(int speed) {
-  analogWrite(LEFT_LPWM, 0);      analogWrite(RIGHT_LPWM, 0);
-  analogWrite(LEFT_RPWM, speed);  analogWrite(RIGHT_RPWM, speed);
+  int leftPwm  = constrain((int)(speed * leftTrim + 0.5), 0, 255);
+  int rightPwm = constrain((int)(speed * rightTrim + 0.5), 0, 255);
+  analogWrite(LEFT_LPWM, 0);        analogWrite(RIGHT_LPWM, 0);
+  analogWrite(LEFT_RPWM, leftPwm);  analogWrite(RIGHT_RPWM, rightPwm);
 }
 
 void setBackward(int speed) {
-  analogWrite(LEFT_RPWM, 0);      analogWrite(RIGHT_RPWM, 0);
-  analogWrite(LEFT_LPWM, speed);  analogWrite(RIGHT_LPWM, speed);
+  int leftPwm  = constrain((int)(speed * leftTrim + 0.5), 0, 255);
+  int rightPwm = constrain((int)(speed * rightTrim + 0.5), 0, 255);
+  analogWrite(LEFT_RPWM, 0);        analogWrite(RIGHT_RPWM, 0);
+  analogWrite(LEFT_LPWM, leftPwm);  analogWrite(RIGHT_LPWM, rightPwm);
 }
 
 // Independent wheel control for differential drive (EKF Pure Pursuit)
@@ -414,16 +434,16 @@ bool turnTick() {
         turnProgressDeg = 0.0;
         turnLastHeadingDeg = startH;
         turnProgressValid = true;
+        turnIntegral  = 0.0;
+        turnPrevError = turnRequestedDeg;
         turnState      = TURN_SPINNING;
         turnSpinStart  = millis();
         turnLastCheck  = millis();
-        if (turnDir == 1) spinRight(turnSpeed);
-        else spinLeft(turnSpeed);
       }
       return true;
 
     case TURN_SPINNING: {
-      // Check heading every ~10ms
+      // Heading PID — check every ~10ms
       if (now - turnLastCheck < 10) return true;
       turnLastCheck = now;
 
@@ -444,18 +464,36 @@ bool turnTick() {
 
       if ((reachedTarget || withinTol) && (now - turnSpinStart >= TURN_MIN_SPIN_MS)) {
         stopMotors();
+        turnIntegral = 0.0;
+        turnPrevError = 0.0;
         Serial.print("Turn complete. End heading: "); Serial.println(nowH);
+        Serial.print("Turn progress: "); Serial.print(turnProgressDeg, 1); Serial.println(" deg");
         turnState = TURN_DONE;
         return false;
       }
 
-      // Timeout check against the original spin start time
       if (now - turnSpinStart > turnTimeout) {
         stopMotors();
+        turnIntegral = 0.0;
+        turnPrevError = 0.0;
         Serial.println("Turn timeout.");
         turnState = TURN_DONE;
         return false;
       }
+
+      // ── Heading PID: modulate spin speed from remaining degrees
+      float dtSec = 0.01;
+      float error = remainingDeg;
+      turnIntegral += error * dtSec;
+      if (turnIntegral > TURN_INTEGRAL_LIMIT) turnIntegral = TURN_INTEGRAL_LIMIT;
+      if (turnIntegral < -TURN_INTEGRAL_LIMIT) turnIntegral = -TURN_INTEGRAL_LIMIT;
+      float derivative = (error - turnPrevError) / dtSec;
+      turnPrevError = error;
+      float pidOut = (turnKp * error) + (turnKi * turnIntegral) + (turnKd * derivative);
+      int spinPwm = constrain((int)(pidOut + 0.5), TURN_MIN_PWM, TURN_MAX_PWM);
+
+      if (turnDir == 1) spinRight(spinPwm);
+      else spinLeft(spinPwm);
 
       return true;
     }
@@ -505,6 +543,8 @@ void startTurn(int dir, int speed) {
   turnRequestedDeg = 90.0;
   turnProgressDeg = 0.0;
   turnProgressValid = false;
+  turnIntegral  = 0.0;
+  turnPrevError = 0.0;
 
   // Calculate relative target heading: ±90° from current
   float currentH = readHeadingDeg();
@@ -581,6 +621,66 @@ void handleCommand(String cmd) {
   // PID_GET — report current PID gains
   if (cmd == "PID_GET" || cmd == "pid_get") {
     sendPidPacket();
+    return;
+  }
+
+  // TRIM,left,right — set per-wheel PWM trim factors
+  if (cmd.startsWith("TRIM,") || cmd.startsWith("trim,")) {
+    int c1 = cmd.indexOf(',');
+    int c2 = cmd.indexOf(',', c1 + 1);
+    if (c1 < 0 || c2 < 0) {
+      Serial.println("ERROR: format is TRIM,left,right (e.g. TRIM,1.0,0.92)");
+      return;
+    }
+    float newL = cmd.substring(c1 + 1, c2).toFloat();
+    float newR = cmd.substring(c2 + 1).toFloat();
+    if (newL < 0.5 || newL > 1.5 || newR < 0.5 || newR > 1.5) {
+      Serial.println("ERROR: Trim must be 0.5–1.5");
+      return;
+    }
+    leftTrim = newL;
+    rightTrim = newR;
+    Serial.print("TRIM,"); Serial.print(leftTrim, 3);
+    Serial.print(","); Serial.println(rightTrim, 3);
+    return;
+  }
+
+  // TRIM_GET — report current trim
+  if (cmd == "TRIM_GET" || cmd == "trim_get") {
+    Serial.print("TRIM,"); Serial.print(leftTrim, 3);
+    Serial.print(","); Serial.println(rightTrim, 3);
+    return;
+  }
+
+  // TURN_SET,kp,ki,kd — tune heading PID for turns
+  if (cmd.startsWith("TURN_SET,") || cmd.startsWith("turn_set,")) {
+    int c1 = cmd.indexOf(',');
+    int c2 = cmd.indexOf(',', c1 + 1);
+    int c3 = cmd.indexOf(',', c2 + 1);
+    if (c1 < 0 || c2 < 0 || c3 < 0) {
+      Serial.println("ERROR: TURN_SET,kp,ki,kd");
+      return;
+    }
+    float nKp = cmd.substring(c1 + 1, c2).toFloat();
+    float nKi = cmd.substring(c2 + 1, c3).toFloat();
+    float nKd = cmd.substring(c3 + 1).toFloat();
+    if (nKp <= 0.0 || nKi < 0.0 || nKd < 0.0) {
+      Serial.println("ERROR: kp>0, ki>=0, kd>=0");
+      return;
+    }
+    turnKp = nKp; turnKi = nKi; turnKd = nKd;
+    turnIntegral = 0.0; turnPrevError = 0.0;
+    Serial.print("TURN_PID,"); Serial.print(turnKp, 4);
+    Serial.print(","); Serial.print(turnKi, 4);
+    Serial.print(","); Serial.println(turnKd, 4);
+    return;
+  }
+
+  // TURN_GET — report heading PID gains
+  if (cmd == "TURN_GET" || cmd == "turn_get") {
+    Serial.print("TURN_PID,"); Serial.print(turnKp, 4);
+    Serial.print(","); Serial.print(turnKi, 4);
+    Serial.print(","); Serial.println(turnKd, 4);
     return;
   }
 
@@ -702,18 +802,14 @@ void handleCommand(String cmd) {
 
   Serial.println("Unknown command.");
   Serial.println("Commands:");
-  Serial.println("  FORWARD <0-255>");
-  Serial.println("  BACKWARD <0-255>");
-  Serial.println("  SET_SPEED <0-255>");
-  Serial.println("  TURN_LEFT_90 <1-255>");
-  Serial.println("  TURN_RIGHT_90 <1-255>");
-  Serial.println("  STOP | S");
-  Serial.println("  CMD,<v_m/s>,<omega_rad/s>  — Pure Pursuit differential drive");
-  Serial.println("  PID_SET,<kp>,<ki>,<kd>");
-  Serial.println("  PID_GET");
-  Serial.println("  IMU_STREAM [interval_ms]");
-  Serial.println("  IMU_STOP");
-  Serial.println("  IMU_READ");
+  Serial.println("  FORWARD <0-255>  | BACKWARD <0-255>");
+  Serial.println("  SET_SPEED <0-255> | STOP | S");
+  Serial.println("  TURN_LEFT_90 <1-255> | TURN_RIGHT_90 <1-255>");
+  Serial.println("  CMD,<v>,<omega>   — differential drive");
+  Serial.println("  TRIM,<left>,<right> | TRIM_GET");
+  Serial.println("  PID_SET,<kp>,<ki>,<kd> | PID_GET");
+  Serial.println("  TURN_SET,<kp>,<ki>,<kd> | TURN_GET");
+  Serial.println("  IMU_STREAM [ms] | IMU_STOP | IMU_READ");
   Serial.println("  ENC_RESET");
 }
 

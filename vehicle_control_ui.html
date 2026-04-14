@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Road Inspector Bot — Vehicle Control</title>
+<meta name="description" content="Standalone vehicle control UI for Road Inspector Bot via Web Serial API">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0c14;--card:#111827;--card-border:#1e293b;
+  --accent:#3b82f6;--accent2:#8b5cf6;--green:#10b981;--red:#ef4444;--amber:#f59e0b;
+  --text:#e2e8f0;--text2:#94a3b8;--text3:#64748b;
+  --glow:0 0 20px rgba(59,130,246,.15);
+}
+body{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;min-height:100vh;padding:12px}
+h1{font-size:1.2rem;font-weight:600;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent}
+
+/* Layout */
+.top-bar{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;background:var(--card);border:1px solid var(--card-border);border-radius:12px;margin-bottom:12px}
+.conn-btn{padding:8px 20px;border:none;border-radius:8px;font-family:inherit;font-size:.85rem;font-weight:600;cursor:pointer;transition:all .2s}
+.conn-btn.connect{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}
+.conn-btn.connect:hover{filter:brightness(1.15);transform:translateY(-1px)}
+.conn-btn.disconnect{background:var(--red);color:#fff}
+.conn-status{font-size:.8rem;color:var(--text3);display:flex;align-items:center;gap:6px}
+.conn-dot{width:8px;height:8px;border-radius:50%;background:var(--red);transition:background .3s}
+.conn-dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
+
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+
+.card{background:var(--card);border:1px solid var(--card-border);border-radius:12px;padding:14px;box-shadow:var(--glow)}
+.card h2{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text3);margin-bottom:10px;font-weight:600}
+
+/* Drive controls */
+.drive-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;max-width:280px;margin:0 auto}
+.drive-btn{padding:14px 8px;border:none;border-radius:10px;font-size:.9rem;font-weight:600;cursor:pointer;transition:all .15s;font-family:inherit;position:relative;overflow:hidden}
+.drive-btn:active{transform:scale(.95)}
+.drive-btn::after{content:'';position:absolute;inset:0;background:rgba(255,255,255,.08);opacity:0;transition:opacity .15s}
+.drive-btn:hover::after{opacity:1}
+.btn-fwd{background:linear-gradient(135deg,#065f46,#10b981);color:#d1fae5}
+.btn-bwd{background:linear-gradient(135deg,#7f1d1d,#ef4444);color:#fecaca}
+.btn-left,.btn-right{background:linear-gradient(135deg,#1e3a5f,#3b82f6);color:#dbeafe}
+.btn-stop{background:linear-gradient(135deg,#78350f,#f59e0b);color:#fef3c7}
+.btn-emg{background:linear-gradient(135deg,#991b1b,#dc2626);color:#fff;font-size:.8rem;grid-column:1/-1;animation:pulse-emg 2s infinite}
+@keyframes pulse-emg{0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.4)}50%{box-shadow:0 0 12px 4px rgba(220,38,38,.2)}}
+.placeholder{visibility:hidden}
+
+/* Speed slider */
+.speed-row{display:flex;align-items:center;gap:10px;margin-top:12px}
+.speed-row label{font-size:.8rem;color:var(--text2);white-space:nowrap;min-width:45px}
+.speed-row input[type=range]{flex:1;accent-color:var(--accent);height:6px}
+.speed-val{min-width:36px;text-align:right;font-weight:700;color:var(--accent);font-size:.95rem;font-family:'JetBrains Mono',monospace}
+
+/* Keyboard hint */
+.kbd-hint{font-size:.7rem;color:var(--text3);text-align:center;margin-top:10px}
+kbd{background:#1e293b;padding:2px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-size:.7rem;border:1px solid #334155}
+
+/* Telemetry */
+.telem-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;overflow:hidden}
+.telem-cell{background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:6px 4px;text-align:center;min-width:0}
+.telem-cell .lbl{font-size:.65rem;color:var(--text3);margin-bottom:2px;text-transform:uppercase;letter-spacing:.04em}
+.telem-cell .val{font-size:.95rem;font-weight:600;color:var(--accent);font-family:'JetBrains Mono',monospace}
+
+.heading-row{display:flex;align-items:center;justify-content:center;gap:16px;margin-top:8px;padding:10px;background:#0f172a;border:1px solid #1e293b;border-radius:8px}
+.heading-row .val{font-size:1.4rem;font-weight:700;color:var(--amber);font-family:'JetBrains Mono',monospace}
+canvas{display:block}
+
+/* Settings inputs */
+.setting-row{display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap}
+.setting-row label{font-size:.8rem;color:var(--text2);min-width:22px;flex-shrink:0}
+.setting-row input{flex:1;min-width:50px;padding:6px 6px;background:#0f172a;border:1px solid #334155;border-radius:6px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:.82rem;text-align:center}
+.setting-btn{padding:7px 12px;border:none;border-radius:6px;font-size:.78rem;font-weight:600;cursor:pointer;font-family:inherit;transition:all .15s}
+.setting-btn:hover{filter:brightness(1.15)}
+.setting-btn.apply{background:var(--accent);color:#fff}
+.setting-btn.read{background:#1e293b;color:var(--text2)}
+.setting-status{font-size:.75rem;color:var(--green);min-height:18px;margin-top:4px}
+
+/* Serial log */
+.log-wrap{grid-column:1/-1}
+#serialLog{background:#020617;border:1px solid #1e293b;border-radius:8px;padding:10px;font-family:'JetBrains Mono',monospace;font-size:.75rem;color:var(--green);height:180px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;line-height:1.5}
+.log-controls{display:flex;gap:8px;margin-top:8px}
+.log-controls button{padding:5px 12px;border:none;border-radius:6px;font-size:.75rem;cursor:pointer;background:#1e293b;color:var(--text2);font-family:inherit}
+
+/* Send command bar */
+.cmd-bar{display:flex;gap:6px;margin-top:8px}
+.cmd-bar input{flex:1;padding:8px 10px;background:#0f172a;border:1px solid #334155;border-radius:6px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:.85rem}
+.cmd-bar button{padding:8px 16px;border:none;border-radius:6px;background:var(--accent);color:#fff;font-weight:600;cursor:pointer;font-family:inherit;font-size:.85rem}
+
+/* Warning banner */
+.warn{background:#1c1917;border:1px solid #78350f;border-radius:8px;padding:10px 14px;font-size:.8rem;color:var(--amber);text-align:center;margin-bottom:12px;display:none}
+</style>
+</head>
+<body>
+
+<div class="warn" id="browserWarn">⚠ Web Serial API requires <b>Chrome</b> or <b>Edge</b>. Your browser does not support it.</div>
+
+<!-- Top bar -->
+<div class="top-bar">
+  <h1>🤖 Road Inspector Bot</h1>
+  <div style="display:flex;align-items:center;gap:14px">
+    <div class="conn-status"><div class="conn-dot" id="connDot"></div><span id="connLabel">Disconnected</span></div>
+    <button class="conn-btn connect" id="connBtn" onclick="toggleConnection()">Connect</button>
+  </div>
+</div>
+
+<div class="grid">
+
+  <!-- Drive Controls -->
+  <div class="card">
+    <h2>🎮 Drive Controls</h2>
+    <div class="drive-grid">
+      <div class="placeholder"></div>
+      <button class="drive-btn btn-fwd" onmousedown="sendDrive('fwd')" id="btnFwd">▲ Forward</button>
+      <div class="placeholder"></div>
+      <button class="drive-btn btn-left" onmousedown="sendDrive('left')" id="btnLeft">↺ Left 90°</button>
+      <button class="drive-btn btn-stop" onmousedown="sendDrive('stop')" id="btnStop">■ Stop</button>
+      <button class="drive-btn btn-right" onmousedown="sendDrive('right')" id="btnRight">↻ Right 90°</button>
+      <div class="placeholder"></div>
+      <button class="drive-btn btn-bwd" onmousedown="sendDrive('bwd')" id="btnBwd">▼ Backward</button>
+      <div class="placeholder"></div>
+    </div>
+    <button class="drive-btn btn-emg" onmousedown="sendDrive('emg')" id="btnEmg">⚡ EMERGENCY STOP</button>
+
+    <div class="speed-row">
+      <label>Speed</label>
+      <input type="range" id="spdSlider" min="40" max="255" value="140" oninput="onSpeedChange()">
+      <span class="speed-val" id="spdVal">140</span>
+    </div>
+    <div class="kbd-hint">
+      <kbd>W</kbd> Forward  <kbd>S</kbd> Backward  <kbd>A</kbd> Left  <kbd>D</kbd> Right  <kbd>Space</kbd> Stop  <kbd>Esc</kbd> Emergency
+    </div>
+  </div>
+
+  <!-- IMU Telemetry -->
+  <div class="card">
+    <h2>📡 IMU Telemetry</h2>
+    <div class="telem-grid">
+      <div class="telem-cell"><div class="lbl">Accel X</div><div class="val" id="t_ax">—</div></div>
+      <div class="telem-cell"><div class="lbl">Accel Y</div><div class="val" id="t_ay">—</div></div>
+      <div class="telem-cell"><div class="lbl">Accel Z</div><div class="val" id="t_az">—</div></div>
+      <div class="telem-cell"><div class="lbl">Gyro X</div><div class="val" id="t_gx">—</div></div>
+      <div class="telem-cell"><div class="lbl">Gyro Y</div><div class="val" id="t_gy">—</div></div>
+      <div class="telem-cell"><div class="lbl">Gyro Z</div><div class="val" id="t_gz">—</div></div>
+    </div>
+    <div class="heading-row">
+      <div><div class="lbl" style="font-size:.7rem;color:var(--text3)">Heading</div><div class="val" id="t_heading">—°</div></div>
+      <canvas id="compass" width="70" height="70" style="width:70px;height:70px"></canvas>
+    </div>
+  </div>
+
+  <!-- Encoder Telemetry -->
+  <div class="card">
+    <h2>⚙ Wheel Encoders</h2>
+    <div class="telem-grid">
+      <div class="telem-cell"><div class="lbl">Left Δ</div><div class="val" id="t_enc1d">—</div></div>
+      <div class="telem-cell"><div class="lbl">Right Δ</div><div class="val" id="t_enc2d">—</div></div>
+      <div class="telem-cell"><div class="lbl">Δt (ms)</div><div class="val" id="t_dt">—</div></div>
+      <div class="telem-cell"><div class="lbl">Left Total</div><div class="val" id="t_enc1t">—</div></div>
+      <div class="telem-cell"><div class="lbl">Right Total</div><div class="val" id="t_enc2t">—</div></div>
+      <div class="telem-cell"><div class="lbl">L-R Error</div><div class="val" id="t_encErr">—</div></div>
+    </div>
+    <div style="margin-top:8px;display:flex;gap:6px">
+      <button class="setting-btn read" onclick="writeSerial('ENC_RESET')">Reset Counters</button>
+      <button class="setting-btn read" onclick="writeSerial('IMU_STREAM 100')">Stream 10Hz</button>
+      <button class="setting-btn read" onclick="writeSerial('IMU_STOP')">Stop Stream</button>
+    </div>
+  </div>
+
+  <!-- Settings -->
+  <div class="card">
+    <h2>🔧 Tuning</h2>
+
+    <div style="font-size:.75rem;color:var(--text3);margin-bottom:6px;font-weight:600">WHEEL TRIM</div>
+    <div class="setting-row">
+      <label>L</label><input id="trimL" type="number" step="0.01" value="1.00" min="0.5" max="1.5">
+      <label>R</label><input id="trimR" type="number" step="0.01" value="1.00" min="0.5" max="1.5">
+      <button class="setting-btn apply" onclick="applyTrim()">Apply</button>
+      <button class="setting-btn read" onclick="writeSerial('TRIM_GET')">Read</button>
+    </div>
+
+    <div style="font-size:.75rem;color:var(--text3);margin-bottom:6px;margin-top:10px;font-weight:600">TURN HEADING PID</div>
+    <div class="setting-row">
+      <label>Kp</label><input id="tKp" type="number" step="0.1" value="3.0">
+      <label>Ki</label><input id="tKi" type="number" step="0.01" value="0.05">
+      <label>Kd</label><input id="tKd" type="number" step="0.1" value="0.8">
+    </div>
+    <div style="display:flex;gap:6px">
+      <button class="setting-btn apply" onclick="applyTurnPid()">Apply Turn PID</button>
+      <button class="setting-btn read" onclick="writeSerial('TURN_GET')">Read</button>
+    </div>
+
+    <div style="font-size:.75rem;color:var(--text3);margin-bottom:6px;margin-top:10px;font-weight:600">WHEEL SPEED PID (CMD mode)</div>
+    <div class="setting-row">
+      <label>Kp</label><input id="wKp" type="number" step="0.1" value="200.0">
+      <label>Ki</label><input id="wKi" type="number" step="0.1" value="35.0">
+      <label>Kd</label><input id="wKd" type="number" step="0.1" value="2.5">
+    </div>
+    <div style="display:flex;gap:6px">
+      <button class="setting-btn apply" onclick="applyWheelPid()">Apply Wheel PID</button>
+      <button class="setting-btn read" onclick="writeSerial('PID_GET')">Read</button>
+    </div>
+    <div class="setting-status" id="settingStatus"></div>
+  </div>
+
+  <!-- Serial Log -->
+  <div class="card log-wrap">
+    <h2>📋 Serial Log</h2>
+    <div id="serialLog"></div>
+    <div class="cmd-bar">
+      <input id="cmdInput" placeholder="Type command (e.g. FORWARD 150)" onkeydown="if(event.key==='Enter')sendManualCmd()">
+      <button onclick="sendManualCmd()">Send</button>
+    </div>
+    <div class="log-controls">
+      <button onclick="document.getElementById('serialLog').textContent=''">Clear Log</button>
+      <button onclick="toggleAutoScroll()">Toggle Auto-Scroll</button>
+      <span style="flex:1"></span>
+      <span style="font-size:.7rem;color:var(--text3)" id="logCount">0 lines</span>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ──
+let port = null, reader = null, writer = null, readLoop = null;
+let connected = false;
+let autoScroll = true;
+let lineCount = 0;
+let lineBuf = '';
+
+// ── Web Serial check ──
+if (!('serial' in navigator)) {
+  document.getElementById('browserWarn').style.display = 'block';
+  document.getElementById('connBtn').disabled = true;
+}
+
+// ── Connection ──
+async function toggleConnection() {
+  if (connected) { await disconnect(); }
+  else { await connectSerial(); }
+}
+
+async function connectSerial() {
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+    const enc = new TextEncoderStream();
+    enc.readable.pipeTo(port.writable);
+    writer = enc.writable.getWriter();
+    connected = true;
+    updateConnUI(true);
+    appendLog('[SYS] Connected at 115200 baud\n');
+    readSerialLoop();
+    // Auto-start IMU streaming
+    setTimeout(() => writeSerial('IMU_STREAM 100'), 1500);
+    setTimeout(() => { writeSerial('TRIM_GET'); writeSerial('TURN_GET'); writeSerial('PID_GET'); }, 2000);
+  } catch (e) {
+    appendLog('[SYS] Connection failed: ' + e.message + '\n');
+  }
+}
+
+async function disconnect() {
+  connected = false;
+  try {
+    if (reader) { await reader.cancel(); reader.releaseLock(); reader = null; }
+    if (writer) { writer.releaseLock(); writer = null; }
+    if (port) { await port.close(); port = null; }
+  } catch (e) { /* ignore */ }
+  updateConnUI(false);
+  appendLog('[SYS] Disconnected\n');
+}
+
+function updateConnUI(on) {
+  const dot = document.getElementById('connDot');
+  const lbl = document.getElementById('connLabel');
+  const btn = document.getElementById('connBtn');
+  dot.className = 'conn-dot' + (on ? ' on' : '');
+  lbl.textContent = on ? 'Connected' : 'Disconnected';
+  btn.textContent = on ? 'Disconnect' : 'Connect';
+  btn.className = 'conn-btn ' + (on ? 'disconnect' : 'connect');
+}
+
+// ── Serial read loop ──
+async function readSerialLoop() {
+  const dec = new TextDecoderStream();
+  port.readable.pipeTo(dec.writable);
+  reader = dec.readable.getReader();
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) processIncoming(value);
+    }
+  } catch (e) {
+    if (connected) appendLog('[SYS] Read error: ' + e.message + '\n');
+  }
+}
+
+function processIncoming(text) {
+  lineBuf += text;
+  let lines = lineBuf.split('\n');
+  lineBuf = lines.pop(); // keep incomplete line in buffer
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    parseLine(trimmed);
+    appendLog(trimmed + '\n');
+  }
+}
+
+// ── Serial write ──
+async function writeSerial(cmd) {
+  if (!writer) return;
+  try {
+    await writer.write(cmd + '\n');
+  } catch (e) {
+    appendLog('[SYS] Write error: ' + e.message + '\n');
+  }
+}
+
+// ── Log ──
+function appendLog(text) {
+  const el = document.getElementById('serialLog');
+  el.textContent += text;
+  lineCount++;
+  document.getElementById('logCount').textContent = lineCount + ' lines';
+  // Keep max 500 lines
+  const lines = el.textContent.split('\n');
+  if (lines.length > 500) {
+    el.textContent = lines.slice(-300).join('\n');
+  }
+  if (autoScroll) el.scrollTop = el.scrollHeight;
+}
+
+function toggleAutoScroll() { autoScroll = !autoScroll; }
+
+// ── Parse incoming lines ──
+function parseLine(line) {
+  if (line.startsWith('IMU,')) parseImu(line);
+  else if (line.startsWith('PID,')) parseWheelPid(line);
+  else if (line.startsWith('TURN_PID,')) parseTurnPid(line);
+  else if (line.startsWith('TRIM,')) parseTrim(line);
+}
+
+function parseImu(line) {
+  const p = line.split(',');
+  if (p.length < 11) return;
+  const ax=parseFloat(p[1]), ay=parseFloat(p[2]), az=parseFloat(p[3]);
+  const gx=parseFloat(p[4]), gy=parseFloat(p[5]), gz=parseFloat(p[6]);
+  const heading=parseFloat(p[7]);
+  const e1d=parseInt(p[8]), e2d=parseInt(p[9]), dt=parseInt(p[10]);
+  const e1t = p.length >= 12 ? parseInt(p[11]) : NaN;
+  const e2t = p.length >= 13 ? parseInt(p[12]) : NaN;
+
+  setText('t_ax', ax.toFixed(3));
+  setText('t_ay', ay.toFixed(3));
+  setText('t_az', az.toFixed(3));
+  setText('t_gx', gx.toFixed(2));
+  setText('t_gy', gy.toFixed(2));
+  setText('t_gz', gz.toFixed(2));
+  setText('t_heading', heading.toFixed(1) + '°');
+  setText('t_enc1d', String(e1d));
+  setText('t_enc2d', String(e2d));
+  setText('t_dt', String(dt));
+  setText('t_enc1t', isNaN(e1t) ? '—' : String(e1t));
+  setText('t_enc2t', isNaN(e2t) ? '—' : String(e2t));
+  const err = e1d - e2d;
+  setText('t_encErr', String(err));
+  drawCompass(heading);
+}
+
+function parseWheelPid(line) {
+  const p = line.split(',');
+  if (p.length >= 4) {
+    document.getElementById('wKp').value = parseFloat(p[1]).toFixed(1);
+    document.getElementById('wKi').value = parseFloat(p[2]).toFixed(1);
+    document.getElementById('wKd').value = parseFloat(p[3]).toFixed(1);
+    showSetting('Wheel PID read');
+  }
+}
+
+function parseTurnPid(line) {
+  const p = line.split(',');
+  if (p.length >= 4) {
+    document.getElementById('tKp').value = parseFloat(p[1]).toFixed(2);
+    document.getElementById('tKi').value = parseFloat(p[2]).toFixed(2);
+    document.getElementById('tKd').value = parseFloat(p[3]).toFixed(2);
+    showSetting('Turn PID read');
+  }
+}
+
+function parseTrim(line) {
+  const p = line.split(',');
+  if (p.length >= 3) {
+    document.getElementById('trimL').value = parseFloat(p[1]).toFixed(3);
+    document.getElementById('trimR').value = parseFloat(p[2]).toFixed(3);
+    showSetting('Trim read');
+  }
+}
+
+function showSetting(msg) {
+  const el = document.getElementById('settingStatus');
+  el.textContent = '✓ ' + msg;
+  setTimeout(() => { if (el.textContent.includes(msg)) el.textContent = ''; }, 3000);
+}
+
+// ── Drive commands ──
+function sendDrive(action) {
+  const spd = document.getElementById('spdSlider').value;
+  switch(action) {
+    case 'fwd':   writeSerial('FORWARD ' + spd); break;
+    case 'bwd':   writeSerial('BACKWARD ' + spd); break;
+    case 'left':  writeSerial('TURN_LEFT_90 ' + spd); break;
+    case 'right': writeSerial('TURN_RIGHT_90 ' + spd); break;
+    case 'stop':  writeSerial('STOP'); break;
+    case 'emg':   writeSerial('S'); break;
+  }
+}
+
+function onSpeedChange() {
+  document.getElementById('spdVal').textContent = document.getElementById('spdSlider').value;
+}
+
+function sendManualCmd() {
+  const input = document.getElementById('cmdInput');
+  const cmd = input.value.trim();
+  if (cmd) { writeSerial(cmd); input.value = ''; }
+}
+
+// ── Settings apply ──
+function applyTrim() {
+  const l = document.getElementById('trimL').value;
+  const r = document.getElementById('trimR').value;
+  writeSerial('TRIM,' + l + ',' + r);
+}
+
+function applyTurnPid() {
+  const kp = document.getElementById('tKp').value;
+  const ki = document.getElementById('tKi').value;
+  const kd = document.getElementById('tKd').value;
+  writeSerial('TURN_SET,' + kp + ',' + ki + ',' + kd);
+}
+
+function applyWheelPid() {
+  const kp = document.getElementById('wKp').value;
+  const ki = document.getElementById('wKi').value;
+  const kd = document.getElementById('wKd').value;
+  writeSerial('PID_SET,' + kp + ',' + ki + ',' + kd);
+}
+
+// ── Keyboard shortcuts ──
+const keyMap = { w:'fwd', s:'bwd', a:'left', d:'right', ' ':'stop', Escape:'emg' };
+const keyActive = {};
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT') return;
+  const action = keyMap[e.key] || keyMap[e.key.toLowerCase()];
+  if (action && !keyActive[e.key]) {
+    keyActive[e.key] = true;
+    sendDrive(action);
+    highlightBtn(action);
+  }
+});
+document.addEventListener('keyup', (e) => { delete keyActive[e.key]; });
+
+function highlightBtn(action) {
+  const map = { fwd:'btnFwd', bwd:'btnBwd', left:'btnLeft', right:'btnRight', stop:'btnStop', emg:'btnEmg' };
+  const el = document.getElementById(map[action]);
+  if (el) { el.style.filter='brightness(1.3)'; setTimeout(()=>{el.style.filter='';}, 150); }
+}
+
+// ── Compass ──
+function drawCompass(deg) {
+  const c = document.getElementById('compass');
+  const ctx = c.getContext('2d');
+  const w = c.width, h = c.height, cx = w/2, cy = h/2, r = Math.min(w,h)/2 - 4;
+  ctx.clearRect(0,0,w,h);
+
+  // Ring
+  ctx.beginPath(); ctx.arc(cx,cy,r,0,2*Math.PI);
+  ctx.strokeStyle = '#334155'; ctx.lineWidth = 2; ctx.stroke();
+
+  // Cardinal marks
+  ctx.fillStyle = '#64748b'; ctx.font = '9px Inter'; ctx.textAlign = 'center';
+  ctx.fillText('N', cx, cy - r + 10);
+  ctx.fillText('S', cx, cy + r - 4);
+  ctx.fillText('E', cx + r - 6, cy + 3);
+  ctx.fillText('W', cx - r + 6, cy + 3);
+
+  // Needle
+  const rad = (deg - 90) * Math.PI / 180;
+  const nx = cx + (r - 10) * Math.cos(rad);
+  const ny = cy + (r - 10) * Math.sin(rad);
+  ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(nx, ny);
+  ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = 2.5; ctx.stroke();
+  ctx.beginPath(); ctx.arc(nx, ny, 3, 0, 2*Math.PI);
+  ctx.fillStyle = '#f59e0b'; ctx.fill();
+  ctx.beginPath(); ctx.arc(cx, cy, 3, 0, 2*Math.PI);
+  ctx.fillStyle = '#334155'; ctx.fill();
+}
+
+function setText(id, v) { document.getElementById(id).textContent = v; }
+
+// Init compass
+drawCompass(0);
+</script>
+</body>
+</html>
