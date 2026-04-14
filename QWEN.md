@@ -118,7 +118,8 @@ then scales to PWM 0–255
 
 **Robot physical parameters (to be measured and tuned):**
 - TICKS_PER_REV: needs measurement (rotate wheel 1 full turn, count ticks)
-- WHEEL_RADIUS: ~0.05m (needs verification)
+- WHEEL_DIAMETER: 0.32m (32 cm confirmed)
+- WHEEL_RADIUS: 0.16m (derived from diameter)
 - WHEELBASE: ~0.30m centre-to-centre (needs verification)
 - MAX_RAD_S: no-load wheel angular velocity at PWM=255 (needs measurement)
 

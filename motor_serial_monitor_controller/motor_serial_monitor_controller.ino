@@ -726,10 +726,11 @@ void setup() {
     while (1);
   }
 
-  // ── Auto-start IMU streaming for autonomous/EKF operation
+  // ── Auto-start IMU streaming for Serial Monitor telemetry
   imuStreaming = true;
   lastImuTime = millis();
   lastImuSchedule = lastImuTime;
+  Serial.println("Serial Monitor controller mode.");
   Serial.print("IMU streaming auto-started @ ");
   Serial.print(imuInterval);
   Serial.println(" ms");
