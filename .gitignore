@@ -1,0 +1,37 @@
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Arduino
+*.o
+*.elf
+*.bin
+*.hex
+*.bin.tmp
+*.eep
+*.lwo
+*.obj
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Serial monitor logs
+*.log
+
+# Project memory (local-only)
+project_memory.json
+project_memory.md

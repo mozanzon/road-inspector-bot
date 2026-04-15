@@ -1,0 +1,1417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Road Inspector Bot — Command Dashboard</title>
+  <meta name="description" content="Real-time IMU telemetry dashboard and motor controls for the Road Inspector Bot over WiFi">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    /* ═══════════════════════════════════════════════════════
+       CSS DESIGN SYSTEM — Road Inspector Bot Dashboard
+       ═══════════════════════════════════════════════════════ */
+
+    :root {
+      /* Colors */
+      --bg-primary:     #0a0e17;
+      --bg-secondary:   #111827;
+      --bg-card:        rgba(17, 24, 39, 0.7);
+      --bg-glass:       rgba(255, 255, 255, 0.03);
+      --border-glass:   rgba(255, 255, 255, 0.08);
+      --border-active:  rgba(99, 102, 241, 0.4);
+
+      --text-primary:   #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted:     #475569;
+
+      --accent:         #6366f1;
+      --accent-glow:    rgba(99, 102, 241, 0.25);
+      --success:        #10b981;
+      --success-glow:   rgba(16, 185, 129, 0.25);
+      --warning:        #f59e0b;
+      --warning-glow:   rgba(245, 158, 11, 0.25);
+      --danger:         #ef4444;
+      --danger-glow:    rgba(239, 68, 68, 0.25);
+      --info:           #06b6d4;
+
+      /* Typography */
+      --font-sans:  'Inter', system-ui, -apple-system, sans-serif;
+      --font-mono:  'JetBrains Mono', 'Fira Code', monospace;
+
+      /* Spacing */
+      --radius:     12px;
+      --radius-sm:  8px;
+      --radius-lg:  16px;
+      --gap:        16px;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Background gradient mesh ── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 600px 400px at 15% 20%, rgba(99, 102, 241, 0.08), transparent),
+        radial-gradient(ellipse 500px 500px at 85% 80%, rgba(16, 185, 129, 0.06), transparent),
+        radial-gradient(ellipse 400px 300px at 50% 50%, rgba(6, 182, 212, 0.04), transparent);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ── Layout ── */
+    .app {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 24px;
+      background: var(--bg-glass);
+      border-bottom: 1px solid var(--border-glass);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo {
+      width: 36px; height: 36px;
+      background: linear-gradient(135deg, var(--accent), #818cf8);
+      border-radius: var(--radius-sm);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px; font-weight: 800; color: white;
+    }
+
+    .app-title {
+      font-size: 18px; font-weight: 700;
+      background: linear-gradient(135deg, var(--text-primary), var(--text-secondary));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+
+    .app-subtitle { font-size: 12px; color: var(--text-muted); font-weight: 400; }
+
+    /* ── Connection bar ── */
+    .conn-bar {
+      display: flex; align-items: center; gap: 12px;
+    }
+
+    .conn-bar input {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-glass);
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      padding: 8px 14px;
+      border-radius: var(--radius-sm);
+      width: 200px;
+      transition: border-color 0.2s;
+    }
+    .conn-bar input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+    .conn-bar input::placeholder { color: var(--text-muted); }
+
+    .btn {
+      font-family: var(--font-sans);
+      font-size: 13px;
+      font-weight: 600;
+      padding: 8px 18px;
+      border: none;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), #818cf8);
+      color: white;
+      box-shadow: 0 2px 8px var(--accent-glow);
+    }
+    .btn-primary:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 16px var(--accent-glow);
+    }
+
+    .btn-danger {
+      background: linear-gradient(135deg, var(--danger), #f87171);
+      color: white;
+      box-shadow: 0 2px 8px var(--danger-glow);
+    }
+
+    .btn-ghost {
+      background: var(--bg-glass);
+      border: 1px solid var(--border-glass);
+      color: var(--text-secondary);
+    }
+    .btn-ghost:hover { border-color: var(--border-active); color: var(--text-primary); }
+
+    .status-dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      transition: background 0.3s;
+    }
+    .status-dot.connected {
+      background: var(--success);
+      box-shadow: 0 0 8px var(--success-glow);
+      animation: pulse-dot 2s infinite;
+    }
+    .status-dot.error {
+      background: var(--danger);
+      box-shadow: 0 0 8px var(--danger-glow);
+    }
+
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .status-text { font-size: 12px; color: var(--text-muted); font-weight: 500; }
+    .status-text.connected { color: var(--success); }
+
+    /* ── Main grid ── */
+    main {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 280px;
+      grid-template-rows: auto 1fr auto;
+      gap: var(--gap);
+      padding: var(--gap) 24px 24px;
+    }
+
+    /* ── Card ── */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-lg);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      overflow: hidden;
+      transition: border-color 0.3s;
+    }
+    .card:hover { border-color: rgba(255,255,255,0.12); }
+
+    .card-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 20px 12px;
+      border-bottom: 1px solid var(--border-glass);
+    }
+
+    .card-title {
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-secondary);
+    }
+
+    .card-badge {
+      font-size: 11px; font-weight: 600;
+      padding: 2px 8px; border-radius: 99px;
+      background: var(--accent-glow); color: var(--accent);
+    }
+
+    .card-body { padding: 20px; }
+
+    /* ── IMU Attitude Indicator (Artificial Horizon) ── */
+    .attitude-panel { grid-column: 1 / 2; grid-row: 1 / 2; }
+
+    .attitude-container {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 40px;
+      padding: 10px 0;
+    }
+
+    .horizon-wrapper {
+      position: relative;
+      width: 220px; height: 220px;
+    }
+
+    .horizon-ring {
+      position: absolute; inset: 0;
+      border-radius: 50%;
+      border: 2px solid var(--border-glass);
+      box-shadow: inset 0 0 30px rgba(0,0,0,0.4), 0 0 20px rgba(99,102,241,0.1);
+      overflow: hidden;
+    }
+
+    .horizon-sky-ground {
+      position: absolute;
+      width: 300%;
+      height: 300%;
+      left: -100%;
+      top: -100%;
+      transition: transform 0.15s ease-out;
+    }
+
+    .horizon-sky {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 50%;
+      background: linear-gradient(180deg, #1e3a5f 0%, #2563eb 70%, #60a5fa 100%);
+    }
+
+    .horizon-ground {
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      height: 50%;
+      background: linear-gradient(180deg, #92400e 0%, #78350f 30%, #451a03 100%);
+    }
+
+    .horizon-line {
+      position: absolute;
+      top: 50%; left: 0; right: 0;
+      height: 2px;
+      background: white;
+      transform: translateY(-50%);
+    }
+
+    /* pitch ladder lines */
+    .pitch-ladder {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+    }
+    .pitch-mark {
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+      height: 1px;
+      background: rgba(255,255,255,0.4);
+    }
+    .pitch-mark.major { width: 60px; }
+    .pitch-mark.minor { width: 30px; background: rgba(255,255,255,0.2); }
+
+    .horizon-aircraft {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 5;
+    }
+    .horizon-aircraft svg { filter: drop-shadow(0 1px 3px rgba(0,0,0,0.5)); }
+
+    .horizon-heading-ring {
+      position: absolute; inset: -10px;
+      border-radius: 50%;
+      border: 1px solid rgba(255,255,255,0.1);
+      transition: transform 0.15s ease-out;
+    }
+
+    .heading-tick {
+      position: absolute;
+      width: 1px; height: 8px;
+      background: rgba(255,255,255,0.3);
+      top: 0; left: 50%;
+      transform-origin: 50% 120px;
+    }
+    .heading-tick.major { height: 14px; background: rgba(255,255,255,0.6); }
+
+    /* Gauge strips next to horizon */
+    .gauge-strip {
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+    }
+    .gauge-strip-label {
+      font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.1em;
+      color: var(--text-muted);
+    }
+    .gauge-strip-value {
+      font-family: var(--font-mono);
+      font-size: 28px; font-weight: 700;
+      color: var(--text-primary);
+      line-height: 1;
+    }
+    .gauge-strip-unit {
+      font-size: 12px; color: var(--text-muted); font-weight: 400;
+    }
+    .gauge-bar-track {
+      width: 8px; height: 140px;
+      background: var(--bg-secondary);
+      border-radius: 4px; overflow: hidden;
+      position: relative;
+    }
+    .gauge-bar-fill {
+      position: absolute; bottom: 50%; left: 0;
+      width: 100%;
+      border-radius: 4px;
+      transition: all 0.15s ease-out;
+    }
+    .gauge-bar-fill.pitch { background: linear-gradient(0deg, var(--accent), #818cf8); }
+    .gauge-bar-fill.roll  { background: linear-gradient(0deg, var(--info), #22d3ee); }
+    .gauge-bar-center {
+      position: absolute; top: 50%; left: -2px; right: -2px;
+      height: 2px; background: var(--text-muted);
+      transform: translateY(-50%);
+    }
+
+    /* ── Accelerometer charts ── */
+    .accel-panel { grid-column: 1 / 2; grid-row: 2 / 3; min-height: 250px; }
+
+    .chart-container {
+      position: relative;
+      width: 100%; height: 200px;
+    }
+    .chart-container canvas {
+      width: 100%; height: 100%;
+    }
+
+    .chart-legend {
+      display: flex; gap: 20px; justify-content: center;
+      padding-top: 12px;
+    }
+    .legend-item {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 12px; color: var(--text-secondary);
+    }
+    .legend-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+    }
+
+    /* ── Controls panel (right sidebar) ── */
+    .controls-panel {
+      grid-column: 2 / 3;
+      grid-row: 1 / 4;
+      display: flex; flex-direction: column;
+      gap: var(--gap);
+    }
+
+    /* D-pad */
+    .dpad {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      grid-template-rows: repeat(3, 1fr);
+      gap: 6px;
+      width: 100%;
+      aspect-ratio: 1;
+      max-width: 240px;
+      margin: 0 auto;
+    }
+
+    .dpad-btn {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-size: 20px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: all 0.15s ease;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: none;
+    }
+    .dpad-btn:hover {
+      background: var(--accent);
+      border-color: var(--accent);
+      box-shadow: 0 0 20px var(--accent-glow);
+    }
+    .dpad-btn:active, .dpad-btn.active {
+      background: var(--accent);
+      border-color: #818cf8;
+      transform: scale(0.95);
+      box-shadow: 0 0 25px var(--accent-glow);
+    }
+    .dpad-btn.stop-btn {
+      background: linear-gradient(135deg, var(--danger), #dc2626);
+      border-color: var(--danger);
+    }
+    .dpad-btn.stop-btn:hover {
+      box-shadow: 0 0 20px var(--danger-glow);
+    }
+
+    .dpad-btn svg { width: 24px; height: 24px; }
+
+    .dpad-spacer { visibility: hidden; }
+
+    /* Speed slider */
+    .speed-control { padding: 0 4px; }
+    .speed-label-row {
+      display: flex; justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .speed-label {
+      font-size: 12px; font-weight: 600;
+      color: var(--text-secondary); text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .speed-value {
+      font-family: var(--font-mono);
+      font-size: 14px; font-weight: 700;
+      color: var(--accent);
+    }
+
+    input[type=range] {
+      -webkit-appearance: none;
+      width: 100%; height: 6px;
+      background: var(--bg-secondary);
+      border-radius: 3px;
+      outline: none;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 20px; height: 20px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), #818cf8);
+      cursor: pointer;
+      box-shadow: 0 2px 8px var(--accent-glow);
+      transition: box-shadow 0.2s;
+    }
+    input[type=range]::-webkit-slider-thumb:hover {
+      box-shadow: 0 4px 16px var(--accent-glow);
+    }
+
+    /* Telemetry cards */
+    .telem-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .telem-cell {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-sm);
+      padding: 10px 12px;
+      text-align: center;
+    }
+    .telem-cell-label {
+      font-size: 10px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.1em;
+      color: var(--text-muted); margin-bottom: 4px;
+    }
+    .telem-cell-value {
+      font-family: var(--font-mono);
+      font-size: 18px; font-weight: 700;
+      color: var(--text-primary);
+    }
+    .telem-cell-unit {
+      font-size: 10px; color: var(--text-muted); margin-left: 2px;
+    }
+
+    /* ── Log panel ── */
+    .log-panel { grid-column: 1 / 2; grid-row: 3 / 4; }
+
+    .log-container {
+      height: 160px;
+      overflow-y: auto;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--text-secondary);
+      background: rgba(0,0,0,0.2);
+      border-radius: var(--radius-sm);
+      padding: 10px 14px;
+    }
+    .log-container::-webkit-scrollbar { width: 4px; }
+    .log-container::-webkit-scrollbar-track { background: transparent; }
+    .log-container::-webkit-scrollbar-thumb { background: var(--border-glass); border-radius: 2px; }
+
+    .log-line { white-space: pre-wrap; word-break: break-all; }
+    .log-line.imu   { color: var(--info); }
+    .log-line.ack   { color: var(--success); }
+    .log-line.err   { color: var(--danger); }
+    .log-line.info  { color: var(--warning); }
+
+    /* Quick-command input */
+    .cmd-input-row {
+      display: flex; gap: 8px; margin-top: 8px;
+    }
+    .cmd-input {
+      flex: 1;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-glass);
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      padding: 8px 12px;
+      border-radius: var(--radius-sm);
+    }
+    .cmd-input:focus {
+      outline: none; border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+
+    /* ── Keyboard hint ── */
+    .kbd-hint {
+      text-align: center;
+      padding: 8px 0 0;
+      font-size: 11px; color: var(--text-muted);
+    }
+    kbd {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-glass);
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 900px) {
+      main {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto auto auto auto;
+      }
+      .controls-panel {
+        grid-column: 1; grid-row: 2;
+        flex-direction: row; flex-wrap: wrap;
+      }
+      .controls-panel .card { flex: 1; min-width: 240px; }
+    }
+
+    /* ── Animations ── */
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .card { animation: fadeIn 0.5s ease-out backwards; }
+    .card:nth-child(1) { animation-delay: 0.05s; }
+    .card:nth-child(2) { animation-delay: 0.1s; }
+    .card:nth-child(3) { animation-delay: 0.15s; }
+    .card:nth-child(4) { animation-delay: 0.2s; }
+    .card:nth-child(5) { animation-delay: 0.25s; }
+
+    /* stream toggle */
+    .stream-toggle { display: flex; align-items: center; gap: 8px; }
+    .toggle-switch {
+      position: relative;
+      width: 40px; height: 22px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-glass);
+      border-radius: 11px;
+      cursor: pointer;
+      transition: background 0.3s;
+    }
+    .toggle-switch.on {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .toggle-switch::after {
+      content: '';
+      position: absolute;
+      top: 2px; left: 2px;
+      width: 16px; height: 16px;
+      background: white;
+      border-radius: 50%;
+      transition: transform 0.2s;
+    }
+    .toggle-switch.on::after { transform: translateX(18px); }
+    .toggle-label {
+      font-size: 12px; color: var(--text-secondary); font-weight: 500;
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ═══════════ HEADER ═══════════ -->
+  <header>
+    <div class="header-left">
+      <div class="logo">RI</div>
+      <div>
+        <div class="app-title">Road Inspector Bot</div>
+        <div class="app-subtitle">IMU Telemetry & Motor Control</div>
+      </div>
+    </div>
+    <div class="conn-bar">
+      <div class="status-dot" id="statusDot"></div>
+      <span class="status-text" id="statusText">Disconnected</span>
+      <input type="text" id="ipInput" placeholder="192.168.x.x" value="">
+      <span style="color:var(--text-muted); font-family:var(--font-mono); font-size:13px;">:</span>
+      <input type="text" id="portInput" placeholder="8765" value="8765" style="width:70px;">
+      <button class="btn btn-primary" id="connectBtn" onclick="toggleConnection()">Connect</button>
+    </div>
+  </header>
+
+  <!-- ═══════════ MAIN GRID ═══════════ -->
+  <main>
+
+    <!-- ── Attitude / Horizon ── -->
+    <div class="card attitude-panel">
+      <div class="card-header">
+        <span class="card-title">🛰️ Attitude Indicator</span>
+        <div class="stream-toggle">
+          <span class="toggle-label" id="streamLabel">Stream OFF</span>
+          <div class="toggle-switch" id="streamToggle" onclick="toggleStream()"></div>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="attitude-container">
+
+          <!-- Pitch gauge -->
+          <div class="gauge-strip">
+            <span class="gauge-strip-label">Pitch</span>
+            <span class="gauge-strip-value" id="pitchValue">0.0</span>
+            <span class="gauge-strip-unit">deg</span>
+            <div class="gauge-bar-track">
+              <div class="gauge-bar-center"></div>
+              <div class="gauge-bar-fill pitch" id="pitchBar" style="height:0%;bottom:50%"></div>
+            </div>
+          </div>
+
+          <!-- Artificial Horizon -->
+          <div class="horizon-wrapper">
+            <div class="horizon-ring">
+              <div class="horizon-sky-ground" id="horizonSkyGround">
+                <div class="horizon-sky"></div>
+                <div class="horizon-ground"></div>
+                <div class="horizon-line"></div>
+                <div class="pitch-ladder" id="pitchLadder"></div>
+              </div>
+            </div>
+            <!-- Aircraft reference -->
+            <div class="horizon-aircraft">
+              <svg width="80" height="20" viewBox="0 0 80 20">
+                <line x1="0" y1="10" x2="28" y2="10" stroke="#f59e0b" stroke-width="3" stroke-linecap="round"/>
+                <line x1="52" y1="10" x2="80" y2="10" stroke="#f59e0b" stroke-width="3" stroke-linecap="round"/>
+                <circle cx="40" cy="10" r="4" fill="none" stroke="#f59e0b" stroke-width="2"/>
+              </svg>
+            </div>
+            <!-- Heading ring -->
+            <div class="horizon-heading-ring" id="headingRing"></div>
+          </div>
+
+          <!-- Roll gauge -->
+          <div class="gauge-strip">
+            <span class="gauge-strip-label">Roll</span>
+            <span class="gauge-strip-value" id="rollValue">0.0</span>
+            <span class="gauge-strip-unit">deg</span>
+            <div class="gauge-bar-track">
+              <div class="gauge-bar-center"></div>
+              <div class="gauge-bar-fill roll" id="rollBar" style="height:0%;bottom:50%"></div>
+            </div>
+          </div>
+
+          <!-- Yaw readout -->
+          <div class="gauge-strip">
+            <span class="gauge-strip-label">Yaw</span>
+            <span class="gauge-strip-value" id="yawValue">0.0</span>
+            <span class="gauge-strip-unit">deg</span>
+            <div style="width:60px;height:60px;position:relative;margin-top:8px;">
+              <svg viewBox="0 0 60 60" width="60" height="60">
+                <circle cx="30" cy="30" r="28" fill="none" stroke="var(--border-glass)" stroke-width="2"/>
+                <text x="30" y="10" font-size="7" fill="var(--text-muted)" text-anchor="middle" font-family="var(--font-mono)">N</text>
+                <text x="55" y="33" font-size="7" fill="var(--text-muted)" text-anchor="middle" font-family="var(--font-mono)">E</text>
+                <text x="30" y="56" font-size="7" fill="var(--text-muted)" text-anchor="middle" font-family="var(--font-mono)">S</text>
+                <text x="5" y="33"  font-size="7" fill="var(--text-muted)" text-anchor="middle" font-family="var(--font-mono)">W</text>
+                <line id="yawNeedle" x1="30" y1="30" x2="30" y2="8" stroke="var(--danger)" stroke-width="2" stroke-linecap="round"
+                      style="transition: transform 0.15s ease-out; transform-origin: 30px 30px;"/>
+              </svg>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Accelerometer Chart ── -->
+    <div class="card accel-panel">
+      <div class="card-header">
+        <span class="card-title">📊 Accelerometer</span>
+        <span class="card-badge" id="imuRate">0 Hz</span>
+      </div>
+      <div class="card-body">
+        <div class="chart-container">
+          <canvas id="accelChart"></canvas>
+        </div>
+        <div class="chart-legend">
+          <div class="legend-item"><div class="legend-dot" style="background:#ef4444"></div> X</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#10b981"></div> Y</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#6366f1"></div> Z</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Controls (right sidebar) ── -->
+    <div class="controls-panel">
+
+      <!-- Drive controls -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">🎮 Drive Controls</span>
+        </div>
+        <div class="card-body">
+          <div class="dpad">
+            <div class="dpad-spacer"></div>
+            <button class="dpad-btn" id="btnForward" data-cmd="F" onpointerdown="cmdDown(this)" onpointerup="cmdUp(this)" onpointerleave="cmdUp(this)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12l7-7 7 7"/></svg>
+            </button>
+            <div class="dpad-spacer"></div>
+
+            <button class="dpad-btn" id="btnLeft" data-cmd="L" onpointerdown="cmdDown(this)" onpointerup="cmdUp(this)" onpointerleave="cmdUp(this)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l-7 7 7 7"/></svg>
+            </button>
+            <button class="dpad-btn stop-btn" id="btnStop" data-cmd="S" onclick="sendCmd('S')">
+              <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+            </button>
+            <button class="dpad-btn" id="btnRight" data-cmd="R" onpointerdown="cmdDown(this)" onpointerup="cmdUp(this)" onpointerleave="cmdUp(this)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 5l7 7-7 7"/></svg>
+            </button>
+
+            <div class="dpad-spacer"></div>
+            <button class="dpad-btn" id="btnBackward" data-cmd="B" onpointerdown="cmdDown(this)" onpointerup="cmdUp(this)" onpointerleave="cmdUp(this)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7 7 7-7"/></svg>
+            </button>
+            <div class="dpad-spacer"></div>
+          </div>
+          <div class="kbd-hint">
+            Keyboard: <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> or <kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd> &nbsp; <kbd>Space</kbd> = Stop
+          </div>
+        </div>
+      </div>
+
+      <!-- Speed -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">⚡ Speed</span>
+        </div>
+        <div class="card-body speed-control">
+          <div class="speed-label-row">
+            <span class="speed-label">PWM</span>
+            <span class="speed-value" id="speedDisplay">140</span>
+          </div>
+          <input type="range" id="speedSlider" min="0" max="255" value="140"
+                 oninput="updateSpeed(this.value)">
+        </div>
+      </div>
+
+      <!-- PID Auto-Balance -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">⚖️ PID Auto-Balance</span>
+          <div class="stream-toggle">
+            <span class="toggle-label" id="pidLabel">PID OFF</span>
+            <div class="toggle-switch" id="pidToggle" onclick="togglePID()"></div>
+          </div>
+        </div>
+        <div class="card-body">
+          <!-- Roll readout -->
+          <div style="text-align:center;margin-bottom:12px;">
+            <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-muted);">Roll</div>
+            <div style="font-family:var(--font-mono);font-size:24px;font-weight:700;color:var(--info);" id="pidRollDisplay">—</div>
+            <div style="font-size:12px;color:var(--text-muted);">deg</div>
+          </div>
+          <!-- Correction readout -->
+          <div style="text-align:center;margin-bottom:14px;">
+            <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-muted);">Correction</div>
+            <div style="font-family:var(--font-mono);font-size:18px;font-weight:700;color:var(--warning);" id="pidCorrDisplay">—</div>
+            <div style="font-size:11px;color:var(--text-muted);">PWM ±50</div>
+          </div>
+          <!-- KP slider -->
+          <div class="speed-label-row">
+            <span class="speed-label">KP</span>
+            <span class="speed-value" id="kpDisplay">3.00</span>
+          </div>
+          <input type="range" id="kpSlider" min="0" max="10" step="0.1" value="3.0"
+                 oninput="document.getElementById('kpDisplay').textContent=parseFloat(this.value).toFixed(2)">
+          <!-- KI slider -->
+          <div class="speed-label-row" style="margin-top:10px;">
+            <span class="speed-label">KI</span>
+            <span class="speed-value" id="kiDisplay">0.050</span>
+          </div>
+          <input type="range" id="kiSlider" min="0" max="1" step="0.005" value="0.05"
+                 oninput="document.getElementById('kiDisplay').textContent=parseFloat(this.value).toFixed(3)">
+          <!-- KD slider -->
+          <div class="speed-label-row" style="margin-top:10px;">
+            <span class="speed-label">KD</span>
+            <span class="speed-value" id="kdDisplay">1.00</span>
+          </div>
+          <input type="range" id="kdSlider" min="0" max="5" step="0.1" value="1.0"
+                 oninput="document.getElementById('kdDisplay').textContent=parseFloat(this.value).toFixed(2)">
+          <!-- Apply button -->
+          <div style="margin-top:14px;">
+            <button class="btn btn-primary" style="width:100%;" onclick="applyPID()">Apply Gains</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Telemetry values -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">📡 Telemetry</span>
+        </div>
+        <div class="card-body">
+          <div class="telem-grid">
+            <div class="telem-cell">
+              <div class="telem-cell-label">Accel X</div>
+              <div class="telem-cell-value" id="telAx">—</div>
+              <span class="telem-cell-unit">g</span>
+            </div>
+            <div class="telem-cell">
+              <div class="telem-cell-label">Accel Y</div>
+              <div class="telem-cell-value" id="telAy">—</div>
+              <span class="telem-cell-unit">g</span>
+            </div>
+            <div class="telem-cell">
+              <div class="telem-cell-label">Accel Z</div>
+              <div class="telem-cell-value" id="telAz">—</div>
+              <span class="telem-cell-unit">g</span>
+            </div>
+            <div class="telem-cell">
+              <div class="telem-cell-label">Temp</div>
+              <div class="telem-cell-value" id="telTemp">—</div>
+              <span class="telem-cell-unit">°C</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Log panel ── -->
+    <div class="card log-panel">
+      <div class="card-header">
+        <span class="card-title">📋 Serial Log</span>
+        <button class="btn btn-ghost" onclick="clearLog()" style="padding:4px 10px; font-size:11px;">Clear</button>
+      </div>
+      <div class="card-body" style="padding-bottom:12px;">
+        <div class="log-container" id="logContainer"></div>
+        <div class="cmd-input-row">
+          <input type="text" class="cmd-input" id="cmdInput" placeholder="Type command (e.g. IMU, HELP)..."
+                 onkeydown="if(event.key==='Enter'){sendCmd(this.value);this.value='';}">
+          <button class="btn btn-primary" onclick="sendCmd(document.getElementById('cmdInput').value);document.getElementById('cmdInput').value='';">
+            Send
+          </button>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════════════
+let ws = null;
+let isConnected = false;
+let streamOn = false;
+let pidOn = false;
+
+// Chart data buffers (last 200 samples)
+const CHART_LEN = 200;
+const accelData = { x: [], y: [], z: [] };
+let imuCount = 0;
+let imuRateTimer = null;
+let lastImuRateCount = 0;
+
+// ═══════════════════════════════════════════════════════════
+//  WEBSOCKET CONNECTION
+// ═══════════════════════════════════════════════════════════
+
+function toggleConnection() {
+  if (isConnected) {
+    disconnect();
+  } else {
+    connect();
+  }
+}
+
+function connect() {
+  const ip   = document.getElementById('ipInput').value.trim();
+  const port = document.getElementById('portInput').value.trim() || '8765';
+  if (!ip) { alert('Enter the Raspberry Pi IP address'); return; }
+
+  setStatus('connecting');
+  const url = `ws://${ip}:${port}`;
+  ws = new WebSocket(url);
+
+  ws.onopen = () => {
+    isConnected = true;
+    setStatus('connected');
+    addLog('info', `Connected to ${url}`);
+    startRateTimer();
+    // Sync PID state
+    setTimeout(() => sendCmd('PID STATUS'), 300);
+  };
+
+  ws.onclose = () => {
+    isConnected = false;
+    setStatus('disconnected');
+    addLog('info', 'Disconnected');
+    stopRateTimer();
+  };
+
+  ws.onerror = (e) => {
+    setStatus('error');
+    addLog('err', `WebSocket error`);
+  };
+
+  ws.onmessage = (event) => {
+    handleMessage(event.data);
+  };
+}
+
+function disconnect() {
+  if (ws) { ws.close(); ws = null; }
+  isConnected = false;
+  setStatus('disconnected');
+}
+
+function setStatus(state) {
+  const dot  = document.getElementById('statusDot');
+  const text = document.getElementById('statusText');
+  const btn  = document.getElementById('connectBtn');
+
+  dot.className = 'status-dot';
+  text.className = 'status-text';
+
+  if (state === 'connected') {
+    dot.classList.add('connected');
+    text.classList.add('connected');
+    text.textContent = 'Connected';
+    btn.textContent  = 'Disconnect';
+    btn.className    = 'btn btn-danger';
+  } else if (state === 'connecting') {
+    text.textContent = 'Connecting...';
+    btn.textContent  = 'Connecting';
+    btn.className    = 'btn btn-ghost';
+  } else if (state === 'error') {
+    dot.classList.add('error');
+    text.textContent = 'Error';
+    btn.textContent  = 'Connect';
+    btn.className    = 'btn btn-primary';
+  } else {
+    text.textContent = 'Disconnected';
+    btn.textContent  = 'Connect';
+    btn.className    = 'btn btn-primary';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  MESSAGE PARSING
+// ═══════════════════════════════════════════════════════════
+
+function handleMessage(raw) {
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    addLog('info', raw);
+    return;
+  }
+
+  switch (data.t) {
+    case 'imu':
+      updateIMU(data);
+      imuCount++;
+      break;
+    case 'ack':
+      addLog('ack', `ACK: ${data.cmd} spd=${data.spd}`);
+      break;
+    case 'err':
+      addLog('err', `ERR: ${data.msg}`);
+      break;
+    case 'status':
+      addLog('info', `STATUS: spd=${data.spd} stream=${data.stream} imu_ok=${data.imu_ok} pid=${data.pid}`);
+      if (data.spd !== undefined) {
+        document.getElementById('speedSlider').value = data.spd;
+        document.getElementById('speedDisplay').textContent = data.spd;
+      }
+      if (data.stream) {
+        streamOn = true;
+        document.getElementById('streamToggle').classList.add('on');
+        document.getElementById('streamLabel').textContent = 'Stream ON';
+      }
+      if (data.pid) {
+        pidOn = true;
+        document.getElementById('pidToggle').classList.add('on');
+        document.getElementById('pidLabel').textContent = 'PID ON';
+      }
+      break;
+    case 'pid':
+      // PID status response
+      pidOn = data.on || false;
+      if (pidOn) {
+        document.getElementById('pidToggle').classList.add('on');
+        document.getElementById('pidLabel').textContent = 'PID ON';
+      } else {
+        document.getElementById('pidToggle').classList.remove('on');
+        document.getElementById('pidLabel').textContent = 'PID OFF';
+      }
+      document.getElementById('pidRollDisplay').textContent = (data.roll || 0).toFixed(1);
+      document.getElementById('pidCorrDisplay').textContent = data.corr !== undefined ? data.corr : '—';
+      // Update sliders
+      if (data.kp !== undefined) {
+        document.getElementById('kpSlider').value = data.kp;
+        document.getElementById('kpDisplay').textContent = parseFloat(data.kp).toFixed(2);
+      }
+      if (data.ki !== undefined) {
+        document.getElementById('kiSlider').value = data.ki;
+        document.getElementById('kiDisplay').textContent = parseFloat(data.ki).toFixed(3);
+      }
+      if (data.kd !== undefined) {
+        document.getElementById('kdSlider').value = data.kd;
+        document.getElementById('kdDisplay').textContent = parseFloat(data.kd).toFixed(2);
+      }
+      addLog('info', `PID: roll=${(data.roll||0).toFixed(1)}° corr=${data.corr} kp=${data.kp} ki=${data.ki} kd=${data.kd}`);
+      break;
+    case 'info':
+      addLog('info', data.msg);
+      break;
+    default:
+      addLog('info', raw);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  IMU VISUALIZATION
+// ═══════════════════════════════════════════════════════════
+
+function updateIMU(d) {
+  const pitch = d.pitch || 0;
+  const roll  = d.roll  || 0;
+  const yaw   = d.yaw   || 0;
+
+  // Attitude indicator (artificial horizon)
+  const horizonEl = document.getElementById('horizonSkyGround');
+  // pitch: positive = nose up → ground moves down → translateY positive
+  const pitchPx = (pitch / 90) * 110;  // 110px per 90°
+  horizonEl.style.transform = `rotate(${-roll}deg) translateY(${-pitchPx}px)`;
+
+  // Heading ring
+  document.getElementById('headingRing').style.transform = `rotate(${-yaw}deg)`;
+
+  // Yaw needle
+  document.getElementById('yawNeedle').style.transform = `rotate(${yaw}deg)`;
+
+  // Gauges text
+  document.getElementById('pitchValue').textContent = pitch.toFixed(1);
+  document.getElementById('rollValue').textContent  = roll.toFixed(1);
+  document.getElementById('yawValue').textContent   = yaw.toFixed(1);
+
+  // Gauge bars
+  const maxAngle = 45;  // full bar at ±45°
+  updateGaugeBar('pitchBar', pitch, maxAngle);
+  updateGaugeBar('rollBar', roll, maxAngle);
+
+  // Accel telemetry cells
+  document.getElementById('telAx').textContent = (d.ax || 0).toFixed(2);
+  document.getElementById('telAy').textContent = (d.ay || 0).toFixed(2);
+  document.getElementById('telAz').textContent = (d.az || 0).toFixed(2);
+  document.getElementById('telTemp').textContent = (d.temp || 0).toFixed(1);
+
+  // Push chart data
+  pushChartData(d.ax || 0, d.ay || 0, d.az || 0);
+  drawChart();
+}
+
+function updateGaugeBar(id, angle, maxAngle) {
+  const bar = document.getElementById(id);
+  const pct = Math.min(Math.abs(angle) / maxAngle * 50, 50);
+  if (angle >= 0) {
+    bar.style.bottom = '50%';
+    bar.style.height = pct + '%';
+    bar.style.top = 'auto';
+  } else {
+    bar.style.top = '50%';
+    bar.style.height = pct + '%';
+    bar.style.bottom = 'auto';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  ACCEL CHART (Custom Canvas)
+// ═══════════════════════════════════════════════════════════
+
+function pushChartData(ax, ay, az) {
+  accelData.x.push(ax);
+  accelData.y.push(ay);
+  accelData.z.push(az);
+  if (accelData.x.length > CHART_LEN) {
+    accelData.x.shift();
+    accelData.y.shift();
+    accelData.z.shift();
+  }
+}
+
+function drawChart() {
+  const canvas = document.getElementById('accelChart');
+  const ctx = canvas.getContext('2d');
+  const rect = canvas.parentElement.getBoundingClientRect();
+
+  // High-DPI
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width  = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+  const W = rect.width;
+  const H = rect.height;
+
+  // Clear
+  ctx.clearRect(0, 0, W, H);
+
+  // Grid
+  const gridColor = 'rgba(255,255,255,0.04)';
+  const gridLines = 8;
+  ctx.strokeStyle = gridColor;
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= gridLines; i++) {
+    const gy = (H / gridLines) * i;
+    ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
+  }
+
+  // Zero line
+  ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+  ctx.lineWidth = 1;
+  const zeroY = H / 2;
+  ctx.beginPath(); ctx.moveTo(0, zeroY); ctx.lineTo(W, zeroY); ctx.stroke();
+
+  // Y labels
+  ctx.fillStyle = 'rgba(255,255,255,0.2)';
+  ctx.font = '10px "JetBrains Mono"';
+  ctx.fillText('+2g', 4, 14);
+  ctx.fillText(' 0g', 4, zeroY - 4);
+  ctx.fillText('-2g', 4, H - 6);
+
+  // Draw lines
+  const colors = ['#ef4444', '#10b981', '#6366f1'];
+  const datasets = [accelData.x, accelData.y, accelData.z];
+  const maxG = 2;  // ±2g range
+
+  datasets.forEach((data, di) => {
+    if (data.length < 2) return;
+    ctx.strokeStyle = colors[di];
+    ctx.lineWidth = 1.5;
+    ctx.globalAlpha = 0.85;
+    ctx.beginPath();
+    for (let i = 0; i < data.length; i++) {
+      const x = (i / (CHART_LEN - 1)) * W;
+      const y = zeroY - (data[i] / maxG) * zeroY;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+//  IMU RATE COUNTER
+// ═══════════════════════════════════════════════════════════
+
+function startRateTimer() {
+  stopRateTimer();
+  imuRateTimer = setInterval(() => {
+    const rate = imuCount - lastImuRateCount;
+    lastImuRateCount = imuCount;
+    document.getElementById('imuRate').textContent = rate + ' Hz';
+  }, 1000);
+}
+
+function stopRateTimer() {
+  if (imuRateTimer) { clearInterval(imuRateTimer); imuRateTimer = null; }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  COMMANDS
+// ═══════════════════════════════════════════════════════════
+
+function sendCmd(cmd) {
+  if (!cmd || !cmd.trim()) return;
+  cmd = cmd.trim();
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(cmd);
+    addLog('info', `→ ${cmd}`);
+  } else {
+    addLog('err', 'Not connected');
+  }
+}
+
+function updateSpeed(val) {
+  document.getElementById('speedDisplay').textContent = val;
+  sendCmd('SPD ' + val);
+}
+
+function toggleStream() {
+  streamOn = !streamOn;
+  const toggle = document.getElementById('streamToggle');
+  const label  = document.getElementById('streamLabel');
+  if (streamOn) {
+    toggle.classList.add('on');
+    label.textContent = 'Stream ON';
+    sendCmd('STREAM ON');
+  } else {
+    toggle.classList.remove('on');
+    label.textContent = 'Stream OFF';
+    sendCmd('STREAM OFF');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  PID CONTROLS
+// ═══════════════════════════════════════════════════════════
+
+function togglePID() {
+  pidOn = !pidOn;
+  const toggle = document.getElementById('pidToggle');
+  const label  = document.getElementById('pidLabel');
+  if (pidOn) {
+    toggle.classList.add('on');
+    label.textContent = 'PID ON';
+    sendCmd('PID ON');
+  } else {
+    toggle.classList.remove('on');
+    label.textContent = 'PID OFF';
+    sendCmd('PID OFF');
+  }
+}
+
+function applyPID() {
+  const kp = parseFloat(document.getElementById('kpSlider').value);
+  const ki = parseFloat(document.getElementById('kiSlider').value);
+  const kd = parseFloat(document.getElementById('kdSlider').value);
+  sendCmd('PID KP ' + kp.toFixed(1));
+  sendCmd('PID KI ' + ki.toFixed(3));
+  sendCmd('PID KD ' + kd.toFixed(2));
+  // Request updated status
+  setTimeout(() => sendCmd('PID STATUS'), 200);
+}
+
+// ═══════════════════════════════════════════════════════════
+//  D-PAD (pointer + keyboard)
+// ═══════════════════════════════════════════════════════════
+
+function cmdDown(btn) {
+  btn.classList.add('active');
+  sendCmd(btn.dataset.cmd);
+}
+function cmdUp(btn) {
+  btn.classList.remove('active');
+  sendCmd('S');
+}
+
+// Keyboard controls
+const keyMap = {
+  'w': 'F', 'ArrowUp':    'F',
+  's': 'B', 'ArrowDown':  'B',
+  'a': 'L', 'ArrowLeft':  'L',
+  'd': 'R', 'ArrowRight': 'R',
+};
+const activeKeys = new Set();
+
+document.addEventListener('keydown', (e) => {
+  // Don't fire if typing in an input
+  if (e.target.tagName === 'INPUT') return;
+
+  if (e.code === 'Space' || e.key === ' ') {
+    e.preventDefault();
+    sendCmd('S');
+    document.getElementById('btnStop').classList.add('active');
+    setTimeout(() => document.getElementById('btnStop').classList.remove('active'), 150);
+    return;
+  }
+
+  const cmd = keyMap[e.key];
+  if (cmd && !activeKeys.has(e.key)) {
+    activeKeys.add(e.key);
+    sendCmd(cmd);
+    // Highlight matching button
+    const btnId = { F:'btnForward', B:'btnBackward', L:'btnLeft', R:'btnRight' }[cmd];
+    if (btnId) document.getElementById(btnId).classList.add('active');
+  }
+});
+
+document.addEventListener('keyup', (e) => {
+  if (e.target.tagName === 'INPUT') return;
+  const cmd = keyMap[e.key];
+  if (cmd && activeKeys.has(e.key)) {
+    activeKeys.delete(e.key);
+    // Only stop if no other direction keys held
+    if (activeKeys.size === 0) sendCmd('S');
+    const btnId = { F:'btnForward', B:'btnBackward', L:'btnLeft', R:'btnRight' }[cmd];
+    if (btnId) document.getElementById(btnId).classList.remove('active');
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+//  LOG
+// ═══════════════════════════════════════════════════════════
+
+const MAX_LOG_LINES = 200;
+
+function addLog(type, text) {
+  const container = document.getElementById('logContainer');
+  const line = document.createElement('div');
+  line.className = `log-line ${type}`;
+  const ts = new Date().toLocaleTimeString('en-GB', { hour12: false });
+  line.textContent = `[${ts}] ${text}`;
+  container.appendChild(line);
+
+  // Trim old lines
+  while (container.children.length > MAX_LOG_LINES) {
+    container.removeChild(container.firstChild);
+  }
+
+  // Auto-scroll
+  container.scrollTop = container.scrollHeight;
+}
+
+function clearLog() {
+  document.getElementById('logContainer').innerHTML = '';
+}
+
+// ═══════════════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════════════
+
+// Build pitch ladder marks
+(function buildPitchLadder() {
+  const ladder = document.getElementById('pitchLadder');
+  for (let deg = -20; deg <= 20; deg += 5) {
+    if (deg === 0) continue;
+    const mark = document.createElement('div');
+    mark.className = 'pitch-mark ' + (deg % 10 === 0 ? 'major' : 'minor');
+    mark.style.top = `${-deg * (110/90)}px`;
+    ladder.appendChild(mark);
+  }
+})();
+
+// Build heading ticks
+(function buildHeadingTicks() {
+  const ring = document.getElementById('headingRing');
+  for (let deg = 0; deg < 360; deg += 15) {
+    const tick = document.createElement('div');
+    tick.className = 'heading-tick' + (deg % 45 === 0 ? ' major' : '');
+    tick.style.transform = `rotate(${deg}deg)`;
+    ring.appendChild(tick);
+  }
+})();
+
+// Initial chart draw
+drawChart();
+
+// Resize handler
+window.addEventListener('resize', drawChart);
+
+addLog('info', 'Dashboard ready. Enter RPi IP and connect.');
+</script>
+</body>
+</html>
