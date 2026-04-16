@@ -99,8 +99,10 @@ float yawRateDegPerSec = 0.0f;
 float lastYawSampleDeg = 0.0f;
 unsigned long lastYawSampleMs = 0;
 float rawYawUnwrappedDeg = 0.0f;
+float correctedYawUnwrappedDeg = 0.0f;
 float lastRawYawWrappedDeg = 0.0f;
 bool rawYawSeeded = false;
+bool correctedYawSeeded = false;
 
 // Yaw drift calibration state
 bool yawCalibrated = false;
@@ -185,22 +187,38 @@ bool refreshIMUState() {
   mpu.update();
   const float rawYawWrapped = wrapAngle180(mpu.getYaw());
   const unsigned long now = millis();
+  float dt = 0.0f;
+  float rawRate = 0.0f;
 
   if (!rawYawSeeded) {
     rawYawSeeded = true;
     rawYawUnwrappedDeg = rawYawWrapped;
+    correctedYawUnwrappedDeg = rawYawWrapped;
     lastRawYawWrappedDeg = rawYawWrapped;
+    correctedYawSeeded = true;
   } else {
-    rawYawUnwrappedDeg += wrapAngle180(rawYawWrapped - lastRawYawWrappedDeg);
+    const float rawDy = wrapAngle180(rawYawWrapped - lastRawYawWrappedDeg);
+    rawYawUnwrappedDeg += rawDy;
     lastRawYawWrappedDeg = rawYawWrapped;
+
+    if (lastYawSampleMs != 0) {
+      dt = (now - lastYawSampleMs) / 1000.0f;
+      if (dt > 0.001f) rawRate = rawDy / dt;
+    }
+
+    if (!correctedYawSeeded) {
+      correctedYawSeeded = true;
+      correctedYawUnwrappedDeg = rawYawWrapped;
+    } else {
+      float correctedDy = rawDy;
+      if (yawCalibrated && dt > 0.001f) {
+        correctedDy -= yawBiasRateDegPerSec * dt;
+      }
+      correctedYawUnwrappedDeg += correctedDy;
+    }
   }
 
-  float yawNow = rawYawUnwrappedDeg;
-  if (yawCalibrated) {
-    float elapsed = (now - yawCalRefMs) / 1000.0f;
-    yawNow = rawYawUnwrappedDeg - (yawBiasRateDegPerSec * elapsed);
-  }
-  yawNow = wrapAngle180(yawNow);
+  float yawNow = wrapAngle180(correctedYawUnwrappedDeg);
 
   if (!yawFilterSeeded) {
     filteredYawDeg = yawNow;
@@ -234,12 +252,15 @@ bool refreshIMUState() {
   }
 
   if (lastYawSampleMs != 0) {
-    float dt = (now - lastYawSampleMs) / 1000.0f;
     if (dt > 0.001f) {
+      // At standstill, slowly re-estimate drift bias to keep heading stable over time.
+      if (yawCalibrated && motionMode == MOTION_STOP && fabs(rawRate) < 6.0f) {
+        yawBiasRateDegPerSec = (0.995f * yawBiasRateDegPerSec) + (0.005f * rawRate);
+      }
       float dy = wrapAngle180(filteredYawDeg - lastYawSampleDeg);
-      float rawRate = dy / dt;
+      float correctedRate = dy / dt;
       // light smoothing for UI readability
-      yawRateDegPerSec = (0.7f * yawRateDegPerSec) + (0.3f * rawRate);
+      yawRateDegPerSec = (0.7f * yawRateDegPerSec) + (0.3f * correctedRate);
     }
   }
 
@@ -290,11 +311,12 @@ bool runYawCalibration(bool fromCommand) {
   yawBiasRateDegPerSec = sumDelta / durationSec;
 
   rawYawSeeded = false;
+  correctedYawSeeded = false;
   yawFilterSeeded = false;
   telemFilterSeeded = false;
-  refreshIMUState();
-  yawCalRefMs = millis();
   yawCalibrated = true;
+  yawCalRefMs = millis();
+  refreshIMUState();
 
   resetYawPID();
   yawPID.setpoint = currentYawDeg;

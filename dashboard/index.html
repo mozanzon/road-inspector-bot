@@ -930,6 +930,8 @@ let isConnected = false;
 let streamOn = false;
 let pidOn = false;
 let activeMotionCmd = 'S';
+let yawVizWrappedPrev = null;
+let yawVizContinuous = 0;
 
 // Chart data buffers (last 200 samples)
 const CHART_LEN = 200;
@@ -961,6 +963,8 @@ function connect() {
 
   ws.onopen = () => {
     isConnected = true;
+    yawVizWrappedPrev = null;
+    yawVizContinuous = 0;
     setStatus('connected');
     addLog('info', `Connected to ${url}`);
     startRateTimer();
@@ -989,6 +993,8 @@ function connect() {
 function disconnect() {
   if (ws) { ws.close(); ws = null; }
   isConnected = false;
+  yawVizWrappedPrev = null;
+  yawVizContinuous = 0;
   setStatus('disconnected');
 }
 
@@ -1125,7 +1131,15 @@ function handleMessage(raw) {
 function updateIMU(d) {
   const pitch = d.pitch || 0;
   const roll  = d.roll  || 0;
-  const yaw   = d.yaw   || 0;
+  const yaw   = normalize180(d.yaw || 0);
+
+  if (yawVizWrappedPrev === null) {
+    yawVizWrappedPrev = yaw;
+    yawVizContinuous = yaw;
+  } else {
+    yawVizContinuous += normalize180(yaw - yawVizWrappedPrev);
+    yawVizWrappedPrev = yaw;
+  }
 
   // Attitude indicator (artificial horizon)
   const horizonEl = document.getElementById('horizonSkyGround');
@@ -1134,10 +1148,10 @@ function updateIMU(d) {
   horizonEl.style.transform = `rotate(${-roll}deg) translateY(${-pitchPx}px)`;
 
   // Heading ring
-  document.getElementById('headingRing').style.transform = `rotate(${-yaw}deg)`;
+  document.getElementById('headingRing').style.transform = `rotate(${-yawVizContinuous}deg)`;
 
   // Yaw needle
-  document.getElementById('yawNeedle').style.transform = `rotate(${yaw}deg)`;
+  document.getElementById('yawNeedle').style.transform = `rotate(${yawVizContinuous}deg)`;
 
   // Gauges text
   document.getElementById('pitchValue').textContent = pitch.toFixed(1);
@@ -1164,6 +1178,12 @@ function updateIMU(d) {
   // Push chart data
   pushChartData(d.ax || 0, d.ay || 0, d.az || 0);
   drawChart();
+}
+
+function normalize180(deg) {
+  while (deg > 180) deg -= 360;
+  while (deg <= -180) deg += 360;
+  return deg;
 }
 
 function updateGaugeBar(id, angle, maxAngle) {
