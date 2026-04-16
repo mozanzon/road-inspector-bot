@@ -40,6 +40,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stdio.h>
 
 // ── LEFT Motor (M1) ──────────────────────────────────────
 const int LEFT_RPWM  = 5;
@@ -64,13 +65,16 @@ enum MotionMode : uint8_t {
   MOTION_FORWARD,
   MOTION_BACKWARD,
   MOTION_TURN_LEFT,
-  MOTION_TURN_RIGHT
+  MOTION_TURN_RIGHT,
+  MOTION_TURN_LEFT_MOVING,
+  MOTION_TURN_RIGHT_MOVING
 };
 
 // ── State ────────────────────────────────────────────────
 int       defaultSpeed      = 140;
 int       motionSpeed       = 140;
 int       turnCommandSpeed  = 140;
+int       turnBaseSignedSpeed = 0;
 bool      streamEnabled     = false;
 bool      imuReady          = false;
 MotionMode motionMode       = MOTION_STOP;
@@ -94,6 +98,23 @@ float currentYawDeg = 0.0f;
 float yawRateDegPerSec = 0.0f;
 float lastYawSampleDeg = 0.0f;
 unsigned long lastYawSampleMs = 0;
+float rawYawUnwrappedDeg = 0.0f;
+float lastRawYawWrappedDeg = 0.0f;
+bool rawYawSeeded = false;
+
+// Yaw drift calibration state
+bool yawCalibrated = false;
+float yawBiasRateDegPerSec = 0.0f;
+unsigned long yawCalRefMs = 0;
+float filteredYawDeg = 0.0f;
+bool yawFilterSeeded = false;
+float filtPitchDeg = 0.0f;
+float filtRollDeg = 0.0f;
+float filtAx = 0.0f;
+float filtAy = 0.0f;
+float filtAz = 0.0f;
+float filtTempC = 0.0f;
+bool telemFilterSeeded = false;
 
 // ── Yaw PID (single PID controller) ──────────────────────
 struct PID {
@@ -118,6 +139,10 @@ const int   TURN_PID_OUT_MAX   = 220;    // ±PWM before min/max turn shaping
 const int   TURN_MIN_PWM       = 85;     // enough to break static friction
 const int   TURN_MAX_PWM       = 220;
 const float TURN_DIR_RATE_THRESHOLD = 4.0f;
+const unsigned long YAW_CAL_DURATION_MS = 1800;
+const unsigned long YAW_CAL_SAMPLE_MS = 10;
+const float YAW_FILTER_ALPHA = 0.25f;
+const float IMU_TELEM_FILTER_ALPHA = 0.20f;
 
 float wrapAngle180(float deg) {
   while (deg > 180.0f) deg -= 360.0f;
@@ -135,6 +160,8 @@ const char* motionModeToStr(MotionMode mode) {
     case MOTION_BACKWARD: return "BWD";
     case MOTION_TURN_LEFT: return "TURN_L";
     case MOTION_TURN_RIGHT: return "TURN_R";
+    case MOTION_TURN_LEFT_MOVING: return "TURN_L_MOV";
+    case MOTION_TURN_RIGHT_MOVING: return "TURN_R_MOV";
     default: return "STOP";
   }
 }
@@ -156,22 +183,127 @@ bool refreshIMUState() {
   if (!imuReady) return false;
 
   mpu.update();
-  const float yawNow = wrapAngle180(mpu.getYaw());
+  const float rawYawWrapped = wrapAngle180(mpu.getYaw());
   const unsigned long now = millis();
+
+  if (!rawYawSeeded) {
+    rawYawSeeded = true;
+    rawYawUnwrappedDeg = rawYawWrapped;
+    lastRawYawWrappedDeg = rawYawWrapped;
+  } else {
+    rawYawUnwrappedDeg += wrapAngle180(rawYawWrapped - lastRawYawWrappedDeg);
+    lastRawYawWrappedDeg = rawYawWrapped;
+  }
+
+  float yawNow = rawYawUnwrappedDeg;
+  if (yawCalibrated) {
+    float elapsed = (now - yawCalRefMs) / 1000.0f;
+    yawNow = rawYawUnwrappedDeg - (yawBiasRateDegPerSec * elapsed);
+  }
+  yawNow = wrapAngle180(yawNow);
+
+  if (!yawFilterSeeded) {
+    filteredYawDeg = yawNow;
+    yawFilterSeeded = true;
+  } else {
+    filteredYawDeg = wrapAngle180(filteredYawDeg + (YAW_FILTER_ALPHA * angleErrorDeg(yawNow, filteredYawDeg)));
+  }
+
+  const float pitchRaw = mpu.getPitch();
+  const float rollRaw = mpu.getRoll();
+  const float axRaw = mpu.getAccX();
+  const float ayRaw = mpu.getAccY();
+  const float azRaw = mpu.getAccZ();
+  const float tempRaw = mpu.getTemperature();
+
+  if (!telemFilterSeeded) {
+    filtPitchDeg = pitchRaw;
+    filtRollDeg = rollRaw;
+    filtAx = axRaw;
+    filtAy = ayRaw;
+    filtAz = azRaw;
+    filtTempC = tempRaw;
+    telemFilterSeeded = true;
+  } else {
+    filtPitchDeg = (1.0f - IMU_TELEM_FILTER_ALPHA) * filtPitchDeg + IMU_TELEM_FILTER_ALPHA * pitchRaw;
+    filtRollDeg = (1.0f - IMU_TELEM_FILTER_ALPHA) * filtRollDeg + IMU_TELEM_FILTER_ALPHA * rollRaw;
+    filtAx = (1.0f - IMU_TELEM_FILTER_ALPHA) * filtAx + IMU_TELEM_FILTER_ALPHA * axRaw;
+    filtAy = (1.0f - IMU_TELEM_FILTER_ALPHA) * filtAy + IMU_TELEM_FILTER_ALPHA * ayRaw;
+    filtAz = (1.0f - IMU_TELEM_FILTER_ALPHA) * filtAz + IMU_TELEM_FILTER_ALPHA * azRaw;
+    filtTempC = (1.0f - IMU_TELEM_FILTER_ALPHA) * filtTempC + IMU_TELEM_FILTER_ALPHA * tempRaw;
+  }
 
   if (lastYawSampleMs != 0) {
     float dt = (now - lastYawSampleMs) / 1000.0f;
     if (dt > 0.001f) {
-      float dy = wrapAngle180(yawNow - lastYawSampleDeg);
+      float dy = wrapAngle180(filteredYawDeg - lastYawSampleDeg);
       float rawRate = dy / dt;
       // light smoothing for UI readability
       yawRateDegPerSec = (0.7f * yawRateDegPerSec) + (0.3f * rawRate);
     }
   }
 
-  currentYawDeg = yawNow;
-  lastYawSampleDeg = yawNow;
+  currentYawDeg = filteredYawDeg;
+  lastYawSampleDeg = filteredYawDeg;
   lastYawSampleMs = now;
+  return true;
+}
+
+bool runYawCalibration(bool fromCommand) {
+  if (!imuReady) {
+    sendError("IMU not available");
+    return false;
+  }
+
+  if (fromCommand && motionMode != MOTION_STOP) {
+    sendError("YAW CAL requires STOP");
+    return false;
+  }
+
+  if (fromCommand) sendInfo("YAW calibration started; keep robot still");
+
+  float sumDelta = 0.0f;
+  float prevRaw = 0.0f;
+  bool havePrev = false;
+  const unsigned long startMs = millis();
+  unsigned long samples = 0;
+
+  while ((millis() - startMs) < YAW_CAL_DURATION_MS) {
+    mpu.update();
+    float raw = wrapAngle180(mpu.getYaw());
+    if (havePrev) {
+      sumDelta += wrapAngle180(raw - prevRaw);
+      samples++;
+    } else {
+      havePrev = true;
+    }
+    prevRaw = raw;
+    delay(YAW_CAL_SAMPLE_MS);
+  }
+
+  const float durationSec = (millis() - startMs) / 1000.0f;
+  if (durationSec <= 0.2f || samples < 20) {
+    sendError("YAW CAL failed");
+    return false;
+  }
+
+  yawBiasRateDegPerSec = sumDelta / durationSec;
+
+  rawYawSeeded = false;
+  yawFilterSeeded = false;
+  telemFilterSeeded = false;
+  refreshIMUState();
+  yawCalRefMs = millis();
+  yawCalibrated = true;
+
+  resetYawPID();
+  yawPID.setpoint = currentYawDeg;
+
+  if (fromCommand) {
+    char msg[64];
+    snprintf(msg, sizeof(msg), "YAW CAL done bias=%.3f deg/s", yawBiasRateDegPerSec);
+    sendInfo(msg);
+  }
   return true;
 }
 
@@ -280,21 +412,21 @@ void sendIMU() {
   Serial.print(F("{\"t\":\"imu\",\"yaw\":"));
   Serial.print(currentYawDeg, 2);
   Serial.print(F(",\"pitch\":"));
-  Serial.print(mpu.getPitch(), 2);
+  Serial.print(filtPitchDeg, 2);
   Serial.print(F(",\"roll\":"));
-  Serial.print(mpu.getRoll(), 2);
+  Serial.print(filtRollDeg, 2);
   Serial.print(F(",\"yaw_rate\":"));
   Serial.print(yawRateDegPerSec, 2);
   Serial.print(F(",\"turn_dir\":\""));
   Serial.print(turnDirFromRate(yawRateDegPerSec));
   Serial.print(F("\",\"ax\":"));
-  Serial.print(mpu.getAccX(), 3);
+  Serial.print(filtAx, 3);
   Serial.print(F(",\"ay\":"));
-  Serial.print(mpu.getAccY(), 3);
+  Serial.print(filtAy, 3);
   Serial.print(F(",\"az\":"));
-  Serial.print(mpu.getAccZ(), 3);
+  Serial.print(filtAz, 3);
   Serial.print(F(",\"temp\":"));
-  Serial.print(mpu.getTemperature(), 1);
+  Serial.print(filtTempC, 1);
   Serial.print(F(",\"ms\":"));
   Serial.print(millis());
   Serial.println(F("}"));
@@ -313,19 +445,25 @@ void sendStatus() {
   Serial.print(motionModeToStr(motionMode));
   Serial.print(F("\",\"yaw_target\":"));
   Serial.print(yawPID.setpoint, 2);
+  Serial.print(F(",\"yaw_cal\":"));
+  Serial.print(yawCalibrated ? F("true") : F("false"));
+  Serial.print(F(",\"yaw_bias\":"));
+  Serial.print(yawBiasRateDegPerSec, 4);
   Serial.println(F("}"));
 }
 
 void printHelp() {
   Serial.println(F("Commands: F [n], B [n], L [n], R [n], S, SPD n"));
   Serial.println(F("  F/B are latched heading-hold modes"));
-  Serial.println(F("  L/R are one-shot 90deg turns using yaw PID"));
+  Serial.println(F("  L/R are one-shot 90deg turns; while moving, keep motion until target"));
   Serial.println(F("          IMU, STREAM ON|OFF, STATUS, HELP"));
   Serial.println(F("          PID ON|OFF, PID KP/KI/KD <val>, PID STATUS"));
+  Serial.println(F("          YAW CAL   (recalibrate bias while stopped)"));
 }
 
 void setMotionStop(bool resetPidState) {
   motionMode = MOTION_STOP;
+  turnBaseSignedSpeed = 0;
   drive(0, 0);
   turnStableSamples = 0;
   if (resetPidState) resetYawPID();
@@ -365,7 +503,16 @@ bool beginTurn90(MotionMode mode, int spd) {
     return false;
   }
 
-  motionMode = mode;
+  const bool fromForward = (motionMode == MOTION_FORWARD);
+  const bool fromBackward = (motionMode == MOTION_BACKWARD);
+  const bool fromMoving = fromForward || fromBackward;
+  turnBaseSignedSpeed = fromForward ? motionSpeed : (fromBackward ? -motionSpeed : 0);
+
+  if (mode == MOTION_TURN_LEFT) {
+    motionMode = fromMoving ? MOTION_TURN_LEFT_MOVING : MOTION_TURN_LEFT;
+  } else {
+    motionMode = fromMoving ? MOTION_TURN_RIGHT_MOVING : MOTION_TURN_RIGHT;
+  }
   turnCommandSpeed = constrain(spd, 0, 255);
   turnStartMs = millis();
   turnStableSamples = 0;
@@ -414,7 +561,9 @@ void updateMotionControl() {
     }
 
     case MOTION_TURN_LEFT:
-    case MOTION_TURN_RIGHT: {
+    case MOTION_TURN_RIGHT:
+    case MOTION_TURN_LEFT_MOVING:
+    case MOTION_TURN_RIGHT_MOVING: {
       if (!imuReady || !yawPID.enabled) {
         sendError("Turn aborted: IMU/PID unavailable");
         setMotionStop(true);
@@ -430,7 +579,14 @@ void updateMotionControl() {
       if (pwm < TURN_MIN_PWM) pwm = TURN_MIN_PWM;
 
       const int signedSpin = (pidOut >= 0) ? pwm : -pwm;
-      drive(signedSpin, -signedSpin);
+      const bool movingTurn = (motionMode == MOTION_TURN_LEFT_MOVING || motionMode == MOTION_TURN_RIGHT_MOVING);
+      if (movingTurn) {
+        const int left = constrain(turnBaseSignedSpeed + signedSpin, -255, 255);
+        const int right = constrain(turnBaseSignedSpeed - signedSpin, -255, 255);
+        drive(left, right);
+      } else {
+        drive(signedSpin, -signedSpin);
+      }
 
       if (fabs(err) <= TURN_TOLERANCE_DEG) {
         if (turnStableSamples < 255) turnStableSamples++;
@@ -439,7 +595,7 @@ void updateMotionControl() {
       }
 
       if (turnStableSamples >= TURN_STABLE_COUNT) {
-        const bool wasLeft = (motionMode == MOTION_TURN_LEFT);
+        const bool wasLeft = (motionMode == MOTION_TURN_LEFT || motionMode == MOTION_TURN_LEFT_MOVING);
         setMotionStop(true);
         sendAck(wasLeft ? "L90 DONE" : "R90 DONE", 0);
       } else if ((now - turnStartMs) > TURN_TIMEOUT_MS) {
@@ -493,6 +649,9 @@ void setup() {
       delay(5000);
       mpu.calibrateAccelGyro();
       imuReady = true;
+      if (!runYawCalibration(false)) {
+        sendError("Startup YAW CAL failed");
+      }
       refreshIMUState();
       yawPID.setpoint = currentYawDeg;
       resetYawPID();
@@ -554,6 +713,12 @@ void loop() {
   // ── IMU single read ──
   if (strcmp(cmd, "IMU") == 0) {
     sendIMU();
+    return;
+  }
+
+  // ── YAW CAL ──
+  if (strcmp(cmd, "YAW CAL") == 0) {
+    runYawCalibration(true);
     return;
   }
 
@@ -624,6 +789,8 @@ void loop() {
       Serial.print(F(",\"target\":")); Serial.print(yawPID.setpoint, 2);
       Serial.print(F(",\"err\":")); Serial.print(err, 2);
       Serial.print(F(",\"corr\":")); Serial.print(lastYawPidOutput);
+      Serial.print(F(",\"yaw_cal\":")); Serial.print(yawCalibrated ? F("true") : F("false"));
+      Serial.print(F(",\"yaw_bias\":")); Serial.print(yawBiasRateDegPerSec, 4);
       Serial.print(F(",\"mode\":\"")); Serial.print(motionModeToStr(motionMode)); Serial.print(F("\""));
       Serial.println(F("}"));
       return;

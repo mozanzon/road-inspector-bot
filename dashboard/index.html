@@ -1052,7 +1052,7 @@ function handleMessage(raw) {
       addLog('err', `ERR: ${data.msg}`);
       break;
     case 'status':
-      addLog('info', `STATUS: spd=${data.spd} stream=${data.stream} imu_ok=${data.imu_ok} pid=${data.pid}`);
+      addLog('info', `STATUS: spd=${data.spd} stream=${data.stream} imu_ok=${data.imu_ok} pid=${data.pid} yaw_cal=${data.yaw_cal} bias=${data.yaw_bias}`);
       if (data.spd !== undefined) {
         document.getElementById('speedSlider').value = data.spd;
         document.getElementById('speedDisplay').textContent = data.spd;
@@ -1108,7 +1108,7 @@ function handleMessage(raw) {
         document.getElementById('kdSlider').value = data.kd;
         document.getElementById('kdDisplay').textContent = parseFloat(data.kd).toFixed(2);
       }
-      addLog('info', `PID: yaw=${(data.yaw||0).toFixed(1)}° err=${(data.err||0).toFixed(1)}° corr=${data.corr} kp=${data.kp} ki=${data.ki} kd=${data.kd}`);
+      addLog('info', `PID: yaw=${(data.yaw||0).toFixed(1)}° err=${(data.err||0).toFixed(1)}° corr=${data.corr} kp=${data.kp} ki=${data.ki} kd=${data.kd} bias=${data.yaw_bias}`);
       break;
     case 'info':
       addLog('info', data.msg);
