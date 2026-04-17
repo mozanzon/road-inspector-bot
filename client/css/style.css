@@ -1,0 +1,270 @@
+:root {
+    --bg-color: #f0f2f5;
+    --card-bg: rgba(255, 255, 255, 0.8);
+    --text-primary: #1e293b;
+    --text-mono: #047857; /* A sleek green for the HUD elements */
+    --accent: #10b981;
+    --border-color: rgba(0, 0, 0, 0.1);
+    --hud-color: #059669; /* HUD green */
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: 'Inter', sans-serif;
+    background-color: var(--bg-color);
+    color: var(--text-primary);
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* Control Panel Sidebar */
+.control-panel {
+    width: 320px;
+    padding: 24px;
+    background: var(--card-bg);
+    backdrop-filter: blur(10px);
+    border-right: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    z-index: 10;
+    box-shadow: 2px 0 10px rgba(0,0,0,0.05);
+}
+
+h2 {
+    font-size: 1.2rem;
+    margin-bottom: 16px;
+    color: #334155;
+}
+
+.input-group {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+input[type="text"] {
+    flex: 1;
+    padding: 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    font-family: 'Share Tech Mono', monospace;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+input[type="text"]:focus {
+    border-color: var(--accent);
+}
+
+button {
+    padding: 10px 16px;
+    background-color: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: background-color 0.2s;
+}
+
+button:hover {
+    background-color: #059669;
+}
+
+.status {
+    font-size: 0.9rem;
+    color: #64748b;
+}
+
+#statusIndicator {
+    font-weight: 600;
+    color: #ef4444; /* red when disconnected */
+}
+#statusIndicator.connected {
+    color: var(--accent);
+}
+
+.data-box {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    background: white;
+    padding: 20px;
+    border-radius: 12px;
+    box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
+}
+
+.data-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 8px;
+}
+
+.data-item .label {
+    font-weight: 600;
+    color: #475569;
+    font-size: 0.85rem;
+}
+
+.data-item .value {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 1.2rem;
+    color: var(--text-mono);
+}
+
+/* Main HUD Area */
+.hud-container {
+    flex: 1;
+    position: relative;
+    background: radial-gradient(circle, #ffffff 0%, #e2e8f0 100%);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    overflow: hidden;
+}
+
+/* Crosshair (Fixed) */
+.crosshair {
+    position: absolute;
+    width: 40px;
+    height: 40px;
+    border: 2px solid var(--hud-color);
+    border-radius: 50%;
+    z-index: 5;
+}
+.crosshair::before, .crosshair::after {
+    content: '';
+    position: absolute;
+    background: var(--hud-color);
+}
+.crosshair::before { top: 50%; left: -20px; right: -20px; height: 2px; transform: translateY(-50%); }
+.crosshair::after { left: 50%; top: -20px; bottom: -20px; width: 2px; transform: translateX(-50%); }
+
+/* Artificial Horizon (Rotates and Translates) */
+.artificial-horizon {
+    position: absolute;
+    width: 600px;
+    height: 600px;
+    transition: transform 0.05s linear;
+    z-index: 2;
+}
+
+.horizon-line {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: var(--hud-color);
+    transform: translateY(-50%);
+}
+
+.pitch-ladder {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 200px;
+    height: 100%;
+}
+
+.ladder-mark {
+    position: absolute;
+    left: 0;
+    right: 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-family: 'Share Tech Mono', monospace;
+    color: var(--hud-color);
+    font-size: 14px;
+}
+
+.ladder-mark .line {
+    flex: 1;
+    height: 2px;
+    background: var(--hud-color);
+    margin: 0 10px;
+}
+
+/* Heading Dial */
+.heading-gauge {
+    position: absolute;
+    bottom: 40px;
+    width: 400px;
+    height: 80px;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.heading-value {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 24px;
+    color: var(--hud-color);
+    background: rgba(255, 255, 255, 0.8);
+    padding: 4px 12px;
+    border: 1px solid var(--hud-color);
+    border-radius: 4px;
+    margin-bottom: 20px;
+    box-shadow: 0 0 10px rgba(5, 150, 105, 0.2);
+}
+
+.compass-dial {
+    position: relative;
+    width: 100%;
+    height: 40px;
+    overflow: hidden;
+    position: relative;
+    border-bottom: 2px solid var(--hud-color);
+}
+
+.compass-dial-inner {
+    position: absolute;
+    display: flex;
+    bottom: 0;
+    transition: transform 0.05s linear;
+}
+
+.compass-tick {
+    width: 30px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+}
+
+.compass-tick .tick-line {
+    width: 2px;
+    height: 10px;
+    background: var(--hud-color);
+}
+.compass-tick.major .tick-line {
+    height: 20px;
+}
+.compass-tick .tick-label {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px;
+    color: var(--hud-color);
+    margin-bottom: 2px;
+}
+
+.compass-pointer {
+    position: absolute;
+    bottom: -10px;
+    width: 0; 
+    height: 0; 
+    border-left: 10px solid transparent;
+    border-right: 10px solid transparent;
+    border-bottom: 15px solid var(--hud-color);
+}
