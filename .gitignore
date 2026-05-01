@@ -1,9 +1,15 @@
 # Ignore everything in the root directory
 /*
 
-# Except for these specific directories and the .gitignore file itself
+# Allow only these top-level directories and their contents
 !/arduino/
+!/arduino/**
+
 !/bridge/
+!/bridge/**
+
 !/model/
-!/models/
+!/model/**
+
+# Keep .gitignore itself tracked
 !/.gitignore
