@@ -2,6 +2,7 @@ fastapi==0.103.1
 uvicorn==0.23.2
 websockets==11.0.3
 pyserial==3.5
-opencv-python==4.8.0.76
-onnxruntime==1.15.1
-numpy==1.26.0
+# Use headless build for server environments (no GUI). On Raspberry Pi prefer system OpenCV where possible.
+opencv-python-headless>=4.8.0.76
+onnxruntime>=1.20.0
+numpy>=2.1.2

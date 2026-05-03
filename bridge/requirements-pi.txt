@@ -1,0 +1,22 @@
+# Raspberry Pi 5 (ARM64) notes and dependencies
+# Recommended: install heavy native deps via apt before pip to avoid build failures.
+# Example (run before pip install):
+# sudo apt update && sudo apt install -y build-essential libatlas-base-dev libopenblas-dev \
+#   libjpeg-dev libpng-dev libavcodec-dev libavformat-dev libswscale-dev libv4l-dev \
+#   libgtk-3-dev gfortran
+
+# Python packages (pip)
+fastapi==0.103.1
+uvicorn==0.23.2
+websockets==11.0.3
+pyserial==3.5
+# Prefer system OpenCV on Pi; fallback to headless pip wheel if needed
+opencv-python-headless>=4.8.0.76
+onnxruntime>=1.20.0
+numpy>=2.1.2
+
+# Optional: if an aarch64-specific ONNX Runtime wheel is available, prefer that
+# e.g. `pip install onnxruntime-aarch64` or follow official ONNX Runtime ARM guide.
+
+# If using PyTorch models (.pt), note PyTorch for ARM64 may require special wheels or
+# use a remote server for heavy inference.

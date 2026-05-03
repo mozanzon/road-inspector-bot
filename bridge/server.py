@@ -143,7 +143,7 @@ class RobotServer:
                     
                     # Encode frame to JPEG
                     _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-                    frame_b64 = base64.b64encode(buffer).decode('utf-8')
+                    frame_b64 = base64.b64encode(buffer.tobytes()).decode('utf-8')
                     
                     msg = json.dumps({
                         "type": "video_frame",
