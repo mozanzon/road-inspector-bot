@@ -79,6 +79,11 @@ bool telemetryStreaming = false;
 unsigned long telemetryInterval = 100;   // ms between packets
 unsigned long lastTelemetryTime  = 0;
 unsigned long lastTelemetrySchedule = 0;
+const unsigned long ODOM_INTERVAL_MS = 20;
+const unsigned long COMPASS_INTERVAL_MS = 50;
+unsigned long lastOdomTime = 0;
+unsigned long lastCompassRead = 0;
+float cachedHeadingDeg = 0.0;
 
 // Odometry & Fusion state
 float odom_x = 0.0;
@@ -567,9 +572,13 @@ float getEncoderHeadingDeg() {
 
 // ---------- Compass & GPS helpers ----------
 float readHeadingDeg() {
-  compass.read();
-  float heading = compass.getAzimuth();
-  return heading;
+  unsigned long now = millis();
+  if (now - lastCompassRead >= COMPASS_INTERVAL_MS || lastCompassRead == 0) {
+    compass.read();
+    cachedHeadingDeg = compass.getAzimuth();
+    lastCompassRead = now;
+  }
+  return cachedHeadingDeg;
 }
 
 float angleDiffDeg(float fromDeg, float toDeg) {
@@ -857,6 +866,27 @@ void handleCommand(String cmd) {
 
   cmd.toUpperCase();
 
+  // MOTOR L <pwm> R <pwm> — signed direct wheel command kept for bridge compatibility
+  if (cmd.startsWith("MOTOR ")) {
+    int lIdx = cmd.indexOf("L ");
+    int rIdx = cmd.indexOf(" R ", lIdx);
+    if (lIdx < 0 || rIdx < 0) {
+      Serial.println("ERROR: MOTOR format is MOTOR L <pwm> R <pwm>");
+      return;
+    }
+
+    int left = constrain(cmd.substring(lIdx + 2, rIdx).toInt(), -255, 255);
+    int right = constrain(cmd.substring(rIdx + 3).toInt(), -255, 255);
+
+    turnState = TURN_IDLE;
+    rampState = RAMP_IDLE;
+    disablePidControl();
+    disableHeadingCorrection();
+    applySignedWheelPwm(abs(left), abs(right), left >= 0, right >= 0);
+    currentSpeed = max(abs(left), abs(right));
+    return;
+  }
+
   // Plotting control
   if (cmd == "P0") {
     plottingMode = PLOT_CONTINUOUS;
@@ -1080,7 +1110,7 @@ void handleCommand(String cmd) {
 
 void setup() {
   Serial.begin(115200);
-  Serial.setTimeout(100);
+  Serial.setTimeout(20);
 
   pinMode(M1_RPWM, OUTPUT);  pinMode(M1_LPWM, OUTPUT);
   pinMode(M1_R_EN, OUTPUT);  pinMode(M1_L_EN, OUTPUT);
@@ -1130,15 +1160,19 @@ void loop() {
     gps.encode(Serial2.read());
   }
   
-  // Update Odometry
-  odometryTick();
+  unsigned long now = millis();
+
+  // Update odometry at a fixed rate instead of every loop pass.
+  if (now - lastOdomTime >= ODOM_INTERVAL_MS) {
+    lastOdomTime = now;
+    odometryTick();
+  }
 
   // ── Plotting Mechanism update
   plottingTick();
 
   // ── Non-blocking Telemetry streaming
   if (telemetryStreaming) {
-    unsigned long now = millis();
     if (now - lastTelemetrySchedule >= telemetryInterval) {
       lastTelemetrySchedule = now;
       sendTelemetryPacket();
