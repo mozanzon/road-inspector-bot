@@ -20,6 +20,9 @@ import numpy as np
 import serial
 import websockets
 
+WHEEL_TRACK_M = 0.57
+MAX_LINEAR_MS = 1.0
+
 # ==================== LOGGING SETUP ====================
 logging.basicConfig(
     level=logging.INFO,
@@ -83,24 +86,37 @@ class ArduinoReader:
         """Parse Arduino output lines"""
         data = {}
         try:
-            if line.startswith('DATA:COMPASS'):
+            if line.startswith('STATUS|'):
+                data['type'] = 'status'
+                parts = line.split('|')[1:]
+                for part in parts:
+                    if '=' not in part:
+                        continue
+                    key, value = part.split('=', 1)
+                    data[key] = self._parse_value(value)
+                if 'heading' in data:
+                    data['yaw'] = data['heading']
+                if 'speed' in data:
+                    data['linearVelocity'] = data['speed']
+
+            elif line.startswith('TELEMETRY,'):
+                data = self._parse_legacy_telemetry(line)
+
+            elif line.startswith('DATA:COMPASS'):
                 parts = line.split('|')[1:]
                 data['type'] = 'compass'
                 for part in parts:
                     if '=' in part:
-                        key, value = part.split('=')
-                        data[key] = float(value)
+                        key, value = part.split('=', 1)
+                        data[key] = self._parse_value(value)
                         
             elif line.startswith('DATA:ENCODER'):
                 parts = line.split('|')[1:]
                 data['type'] = 'encoder'
                 for part in parts:
                     if '=' in part:
-                        key, value = part.split('=')
-                        try:
-                            data[key] = int(value)
-                        except:
-                            data[key] = float(value)
+                        key, value = part.split('=', 1)
+                        data[key] = self._parse_value(value)
                             
             elif line.startswith('ACK:'):
                 data['type'] = 'ack'
@@ -115,11 +131,47 @@ class ArduinoReader:
                 parts = line.split('|')[1:]
                 for part in parts:
                     if '=' in part:
-                        key, value = part.split('=')
-                        data[key] = int(value)
+                        key, value = part.split('=', 1)
+                        data[key] = self._parse_value(value)
         except Exception as e:
             logger.warning(f"Failed to parse line '{line}': {e}")
         
+        return data
+
+    @staticmethod
+    def _parse_value(value):
+        """Parse Arduino key/value fields into bool, int, or float."""
+        value = value.strip()
+        if value in ('true', 'false'):
+            return value == 'true'
+        try:
+            as_float = float(value)
+            if as_float.is_integer():
+                return int(as_float)
+            return as_float
+        except ValueError:
+            return value
+
+    def _parse_legacy_telemetry(self, line):
+        """Parse older TELEMETRY CSV packets if an older sketch is flashed."""
+        fields = line.split(',')
+        data = {'type': 'status'}
+        if len(fields) >= 13:
+            data.update({
+                'heading': float(fields[1]),
+                'yaw': float(fields[1]),
+                'odom_x': float(fields[2]),
+                'odom_y': float(fields[3]),
+                'odom_theta': float(fields[4]),
+                'lat': float(fields[5]),
+                'lng': float(fields[6]),
+                'de1': int(fields[7]),
+                'de2': int(fields[8]),
+                'dt_ms': int(fields[9]),
+                'speed': float(fields[10]),
+                'dash_cm': float(fields[11]),
+                'gap_cm': float(fields[12]),
+            })
         return data
     
     def send_command(self, cmd):
@@ -253,16 +305,27 @@ class RobotBridge:
             
             if cmd_type == 'motor':
                 # Format: {'type': 'motor', 'left': 200, 'right': 150}
-                left = data.get('left', 0)
-                right = data.get('right', 0)
-                self.arduino.send_command(f"MOTOR L {left} R {right}")
+                left = max(-255, min(255, float(data.get('left', 0))))
+                right = max(-255, min(255, float(data.get('right', 0))))
+                left_ms = (left / 255.0) * MAX_LINEAR_MS
+                right_ms = (right / 255.0) * MAX_LINEAR_MS
+                v = (left_ms + right_ms) / 2.0
+                omega = (right_ms - left_ms) / WHEEL_TRACK_M
+                self.arduino.send_command(f"CMD,{v:.3f},{omega:.3f}")
                 
             elif cmd_type == 'movement':
                 # Format: {'type': 'movement', 'action': 'forward', 'speed': 200}
-                action = data.get('action', '').upper()
-                speed = data.get('speed', 200)
-                if action in ['FORWARD', 'BACKWARD', 'LEFT', 'RIGHT']:
-                    self.arduino.send_command(f"{action} {speed}")
+                action = data.get('action', '').lower()
+                speed = max(0, min(255, int(data.get('speed', 200))))
+                command_map = {
+                    'forward': f"FORWARD {speed}",
+                    'backward': f"BACKWARD {speed}",
+                    'left': f"TURN_LEFT_90 {speed}",
+                    'right': f"TURN_RIGHT_90 {speed}",
+                }
+                command = command_map.get(action)
+                if command:
+                    self.arduino.send_command(command)
                     
             elif cmd_type == 'stop':
                 self.arduino.send_command("STOP")
