@@ -1,35 +1,34 @@
 #include <Wire.h>
 #include <QMC5883LCompass.h> // Default compass library
 #include <TinyGPS++.h>
+#include <SoftwareSerial.h>  // Arduino Uno: no Serial2, use SoftwareSerial for GPS
 
-// ── Compass Pins (I2C on Mega)
-const int COMPASS_SDA = 20;
-const int COMPASS_SCL = 21;
+// ── Compass Pins (I2C on Uno: A4=SDA, A5=SCL — fixed, no defines needed)
 QMC5883LCompass compass;
 
-// ── GPS Pins (Serial2 on Mega)
-// Moved to Serial2 to free pins 18/19 for hardware interrupts
-const int GPS_RX = 17;
-const int GPS_TX = 16;
+// ── GPS SoftwareSerial (Uno)
+// GPS module TX → Arduino pin 4 (RX), GPS module RX → Arduino pin 7 (TX)
+const int GPS_RX_PIN = 4;
+const int GPS_TX_PIN = 7;
+SoftwareSerial gpsSerial(GPS_RX_PIN, GPS_TX_PIN);
 TinyGPSPlus gps;
 
-// LEFT MOTOR
-const int M1_RPWM = 5;
-const int M1_LPWM = 6;
-const int M1_R_EN = 7;
-const int M1_L_EN = 8;
+// ── LEFT MOTOR (M1) — Uno PWM pins 5, 6
+const int M1_RPWM  = 5;
+const int M1_LPWM  = 6;
+const int M1_R_EN  = A0;  // Always HIGH (enable)
+const int M1_L_EN  = A1;  // Always HIGH (enable)
 
-// ── RIGHT Motor (M2)
-const int RIGHT_RPWM = 38;
-const int RIGHT_LPWM = 39;
-const int RIGHT_R_EN = 40;
-const int RIGHT_L_EN = 41;
+// ── RIGHT Motor (M2) — Uno PWM pins 9, 10
+const int RIGHT_RPWM  = 9;
+const int RIGHT_LPWM  = 10;
+const int RIGHT_R_EN  = A2;  // Always HIGH (enable)
+const int RIGHT_L_EN  = A3;  // Always HIGH (enable)
 
-// ── PLOTTER Motor (M3)
-const int PLOTTER_RPWM = 44;
-const int PLOTTER_LPWM = 45;
-const int PLOTTER_R_EN = 46;
-const int PLOTTER_L_EN = 47;
+// ── PLOTTER Motor (M3) — Uno PWM pins 11, 13
+// NOTE: Wire PLOTTER R_EN and L_EN directly to 5V on the BTS driver board
+const int PLOTTER_RPWM = 11;
+const int PLOTTER_LPWM = 13;
 
 const int RAMP_STEPS = 50;
 const unsigned long RAMP_TIME = 800;
@@ -79,11 +78,6 @@ bool telemetryStreaming = false;
 unsigned long telemetryInterval = 100;   // ms between packets
 unsigned long lastTelemetryTime  = 0;
 unsigned long lastTelemetrySchedule = 0;
-const unsigned long ODOM_INTERVAL_MS = 20;
-const unsigned long COMPASS_INTERVAL_MS = 50;
-unsigned long lastOdomTime = 0;
-unsigned long lastCompassRead = 0;
-float cachedHeadingDeg = 0.0;
 
 // Odometry & Fusion state
 float odom_x = 0.0;
@@ -99,12 +93,13 @@ double gps_origin_lon = 0.0;
 
 void odometryTick();
 
-// ── Encoder pins (X4 Decoding)
-const int ENC_LEFT_A  = 2;
-const int ENC_LEFT_B  = 18;
+// ── Encoder pins — Uno only has 2 interrupt pins (2 and 3)
+// X2 decoding: only A channels use interrupts; B channels polled in ISR
+const int ENC_LEFT_A  = 2;  // INT0
+const int ENC_LEFT_B  = 8;  // polled inside ISR
 
-const int ENC_RIGHT_A = 3;
-const int ENC_RIGHT_B = 19;
+const int ENC_RIGHT_A = 3;  // INT1
+const int ENC_RIGHT_B = 12; // polled inside ISR
 
 volatile long encoder1_count = 0;
 volatile long encoder2_count = 0;
@@ -215,6 +210,7 @@ void setMotorPwm(int l_l, int l_r, int r_l, int r_r) {
 }
 
 // Wrapper for the independent plotting mechanism actuator
+// PLOTTER R_EN and L_EN are hardwired to 5V on the BTS driver board (no pinMode needed)
 void setPlotterPwm(int power) {
   analogWrite(PLOTTER_LPWM, 0);
   analogWrite(PLOTTER_RPWM, power);
@@ -295,24 +291,15 @@ void plottingTick() {
   }
 }
 
-// ---------- Encoder ISRs (X4 Decoding) ----------
+// ---------- Encoder ISRs (X2 Decoding — Uno only has 2 interrupt pins) ----------
+// Only A channels are interrupt-driven; B channels are read via digitalRead inside ISR.
 void ISR_Left_A() {
   if (digitalRead(ENC_LEFT_A) != digitalRead(ENC_LEFT_B)) { encoder1_count++; }
   else { encoder1_count--; }
 }
 
-void ISR_Left_B() {
-  if (digitalRead(ENC_LEFT_A) == digitalRead(ENC_LEFT_B)) { encoder1_count++; }
-  else { encoder1_count--; }
-}
-
 void ISR_Right_A() {
   if (digitalRead(ENC_RIGHT_A) != digitalRead(ENC_RIGHT_B)) { encoder2_count++; }
-  else { encoder2_count--; }
-}
-
-void ISR_Right_B() {
-  if (digitalRead(ENC_RIGHT_A) == digitalRead(ENC_RIGHT_B)) { encoder2_count++; }
   else { encoder2_count--; }
 }
 
@@ -572,13 +559,9 @@ float getEncoderHeadingDeg() {
 
 // ---------- Compass & GPS helpers ----------
 float readHeadingDeg() {
-  unsigned long now = millis();
-  if (now - lastCompassRead >= COMPASS_INTERVAL_MS || lastCompassRead == 0) {
-    compass.read();
-    cachedHeadingDeg = compass.getAzimuth();
-    lastCompassRead = now;
-  }
-  return cachedHeadingDeg;
+  compass.read();
+  float heading = compass.getAzimuth();
+  return heading;
 }
 
 float angleDiffDeg(float fromDeg, float toDeg) {
@@ -866,27 +849,6 @@ void handleCommand(String cmd) {
 
   cmd.toUpperCase();
 
-  // MOTOR L <pwm> R <pwm> — signed direct wheel command kept for bridge compatibility
-  if (cmd.startsWith("MOTOR ")) {
-    int lIdx = cmd.indexOf("L ");
-    int rIdx = cmd.indexOf(" R ", lIdx);
-    if (lIdx < 0 || rIdx < 0) {
-      Serial.println("ERROR: MOTOR format is MOTOR L <pwm> R <pwm>");
-      return;
-    }
-
-    int left = constrain(cmd.substring(lIdx + 2, rIdx).toInt(), -255, 255);
-    int right = constrain(cmd.substring(rIdx + 3).toInt(), -255, 255);
-
-    turnState = TURN_IDLE;
-    rampState = RAMP_IDLE;
-    disablePidControl();
-    disableHeadingCorrection();
-    applySignedWheelPwm(abs(left), abs(right), left >= 0, right >= 0);
-    currentSpeed = max(abs(left), abs(right));
-    return;
-  }
-
   // Plotting control
   if (cmd == "P0") {
     plottingMode = PLOT_CONTINUOUS;
@@ -1110,38 +1072,41 @@ void handleCommand(String cmd) {
 
 void setup() {
   Serial.begin(115200);
-  Serial.setTimeout(20);
+  Serial.setTimeout(100);
 
-  pinMode(M1_RPWM, OUTPUT);  pinMode(M1_LPWM, OUTPUT);
-  pinMode(M1_R_EN, OUTPUT);  pinMode(M1_L_EN, OUTPUT);
+  // ── Motor output pins
+  pinMode(M1_RPWM, OUTPUT);    pinMode(M1_LPWM, OUTPUT);
+  pinMode(M1_R_EN, OUTPUT);    pinMode(M1_L_EN, OUTPUT);
   pinMode(RIGHT_RPWM, OUTPUT); pinMode(RIGHT_LPWM, OUTPUT);
   pinMode(RIGHT_R_EN, OUTPUT); pinMode(RIGHT_L_EN, OUTPUT);
+  // Plotter PWM pins (EN pins hardwired to 5V on driver board)
+  pinMode(PLOTTER_RPWM, OUTPUT); pinMode(PLOTTER_LPWM, OUTPUT);
 
   stopMotors();
 
-  digitalWrite(M1_R_EN, HIGH);  digitalWrite(M1_L_EN, HIGH);
+  // Enable all drive motor driver EN pins
+  digitalWrite(M1_R_EN, HIGH);    digitalWrite(M1_L_EN, HIGH);
   digitalWrite(RIGHT_R_EN, HIGH); digitalWrite(RIGHT_L_EN, HIGH);
 
-  // ── Encoder pins (X4 Decoding)
-  pinMode(ENC_LEFT_A, INPUT_PULLUP);
-  pinMode(ENC_LEFT_B, INPUT_PULLUP);
+  // ── Encoder pins — X2 decoding on Uno (only 2 interrupts)
+  pinMode(ENC_LEFT_A,  INPUT_PULLUP);
+  pinMode(ENC_LEFT_B,  INPUT_PULLUP);
   pinMode(ENC_RIGHT_A, INPUT_PULLUP);
   pinMode(ENC_RIGHT_B, INPUT_PULLUP);
-  
-  attachInterrupt(digitalPinToInterrupt(ENC_LEFT_A), ISR_Left_A, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(ENC_LEFT_B), ISR_Left_B, CHANGE);
+
+  attachInterrupt(digitalPinToInterrupt(ENC_LEFT_A),  ISR_Left_A,  CHANGE);
   attachInterrupt(digitalPinToInterrupt(ENC_RIGHT_A), ISR_Right_A, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(ENC_RIGHT_B), ISR_Right_B, CHANGE);
+  // NOTE: ENC_LEFT_B (pin 8) and ENC_RIGHT_B (pin 12) are polled inside ISRs
 
   Wire.begin();
-  
-  // Initialize Compass
+
+  // Initialize Compass (I2C on A4/A5 on Uno)
   compass.init();
   Serial.println("Configured QMC5883L Compass");
-  
-  // Initialize GPS on Serial2
-  Serial2.begin(9600);
-  Serial.println("Configured NEO-M8N GPS on Serial2");
+
+  // Initialize GPS on SoftwareSerial (pins 4=RX, 7=TX)
+  gpsSerial.begin(9600);
+  Serial.println("Configured NEO-M8N GPS on SoftwareSerial (pins 4/7)");
 
   // ── Auto-start Telemetry streaming for autonomous/EKF operation
   telemetryStreaming = true;
@@ -1155,24 +1120,20 @@ void setup() {
 }
 
 void loop() {
-  // Process GPS Data
-  while (Serial2.available() > 0) {
-    gps.encode(Serial2.read());
+  // Process GPS Data from SoftwareSerial
+  while (gpsSerial.available() > 0) {
+    gps.encode(gpsSerial.read());
   }
   
-  unsigned long now = millis();
-
-  // Update odometry at a fixed rate instead of every loop pass.
-  if (now - lastOdomTime >= ODOM_INTERVAL_MS) {
-    lastOdomTime = now;
-    odometryTick();
-  }
+  // Update Odometry
+  odometryTick();
 
   // ── Plotting Mechanism update
   plottingTick();
 
   // ── Non-blocking Telemetry streaming
   if (telemetryStreaming) {
+    unsigned long now = millis();
     if (now - lastTelemetrySchedule >= telemetryInterval) {
       lastTelemetrySchedule = now;
       sendTelemetryPacket();

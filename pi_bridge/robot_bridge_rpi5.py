@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -14,6 +15,33 @@ from datetime import datetime
 import cv2
 import serial
 import websockets
+
+# Serial port auto-detection order: USB first, then GPIO UART
+ARDUINO_PORT_CANDIDATES = ["/dev/ttyUSB0", "/dev/ttyAMA0"]
+
+
+def detect_arduino_port(preferred=None):
+    """Return the first available Arduino serial port.
+
+    Priority:
+      1. The port explicitly passed via --arduino-port (if it exists)
+      2. /dev/ttyUSB0  (Uno via USB)
+      3. /dev/ttyAMA0  (Uno via GPIO UART / Pi native UART)
+    """
+    candidates = ([preferred] if preferred else []) + ARDUINO_PORT_CANDIDATES
+    seen = set()
+    for port in candidates:
+        if port and port not in seen:
+            seen.add(port)
+            if os.path.exists(port):
+                logger.info("Auto-detected Arduino port: %s", port)
+                return port
+    logger.warning(
+        "No Arduino port found in %s. Defaulting to %s.",
+        candidates,
+        ARDUINO_PORT_CANDIDATES[0],
+    )
+    return ARDUINO_PORT_CANDIDATES[0]
 
 WHEEL_TRACK_M = 0.57
 MAX_LINEAR_MS = 1.0
@@ -81,6 +109,13 @@ class ArduinoReader:
 
     def connect(self):
         try:
+            # If the configured port doesn't exist, try the fallback automatically
+            if not os.path.exists(self.port):
+                fallback = detect_arduino_port(self.port)
+                logger.warning(
+                    "Port %s not found. Trying %s instead.", self.port, fallback
+                )
+                self.port = fallback
             self.serial = serial.Serial(self.port, self.baudrate, timeout=self.timeout)
             time.sleep(2)
             self.serial.reset_input_buffer()
@@ -125,7 +160,7 @@ class ArduinoReader:
     def _parse_line(line):
         if line.startswith("TELEMETRY,"):
             parts = line.split(",")
-            if len(parts) >= 13:
+            if len(parts) >= 14:
                 return {
                     "type": "telemetry",
                     "heading": float(parts[1]),
@@ -359,7 +394,11 @@ class RobotBridge:
 
 def main():
     parser = argparse.ArgumentParser(description="Robot Bridge - Raspberry Pi 5")
-    parser.add_argument("--arduino-port", default="/dev/ttyUSB0")
+    parser.add_argument(
+        "--arduino-port",
+        default=None,
+        help="Arduino serial port (default: auto-detect /dev/ttyUSB0 then /dev/ttyAMA0)",
+    )
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--camera", type=int, default=0)
@@ -369,8 +408,10 @@ def main():
     parser.add_argument("--jpeg-quality", type=int, default=65)
     args = parser.parse_args()
 
+    arduino_port = detect_arduino_port(args.arduino_port)
+
     bridge = RobotBridge(
-        arduino_port=args.arduino_port,
+        arduino_port=arduino_port,
         websocket_host=args.host,
         websocket_port=args.port,
         camera_id=args.camera,
