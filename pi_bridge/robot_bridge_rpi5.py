@@ -36,11 +36,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_ARDUINO_PORTS = ['/dev/ttyAMA10', '/dev/ttyAMA0', '/dev/ttyUSB0', '/dev/ttyACM0', '/dev/ttyACM10']
+
+
+def parse_serial_ports(value):
+    """Accept a single port or comma-separated fallback list."""
+    if isinstance(value, (list, tuple)):
+        return [str(port).strip() for port in value if str(port).strip()]
+    return [port.strip() for port in str(value).split(',') if port.strip()]
+
+
 class ArduinoReader:
     """Handles serial communication with Arduino"""
     
-    def __init__(self, port='/dev/ttyUSB0', baudrate=115200, timeout=1):
-        self.port = port
+    def __init__(self, port=None, baudrate=115200, timeout=1):
+        self.ports = parse_serial_ports(port or DEFAULT_ARDUINO_PORTS)
+        self.port = self.ports[0]
         self.baudrate = baudrate
         self.timeout = timeout
         self.serial = None
@@ -50,15 +61,19 @@ class ArduinoReader:
         
     def connect(self):
         """Establish serial connection"""
-        try:
-            self.serial = serial.Serial(self.port, self.baudrate, timeout=self.timeout)
-            time.sleep(2)  # Wait for Arduino to initialize
-            self.running = True
-            logger.info(f"Connected to Arduino on {self.port}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to connect to Arduino: {e}")
-            return False
+        for port in self.ports:
+            try:
+                self.serial = serial.Serial(port, self.baudrate, timeout=self.timeout)
+                self.port = port
+                time.sleep(2)  # Wait for Arduino to initialize
+                self.running = True
+                logger.info(f"Connected to Arduino on {self.port}")
+                return True
+            except Exception as e:
+                logger.warning(f"Could not connect to Arduino on {port}: {e}")
+                self.serial = None
+        logger.error(f"Failed to connect to Arduino on any configured port: {', '.join(self.ports)}")
+        return False
     
     def start_reading(self):
         """Start reading thread"""
@@ -367,7 +382,7 @@ class CameraCapture:
 class RobotBridge:
     """Main bridge connecting all components"""
     
-    def __init__(self, arduino_port='/dev/ttyUSB0', websocket_host='0.0.0.0', websocket_port=8765):
+    def __init__(self, arduino_port=None, websocket_host='0.0.0.0', websocket_port=8765):
         self.arduino = ArduinoReader(arduino_port)
         self.camera = CameraCapture()
         self.websocket_host = websocket_host
@@ -545,7 +560,11 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description='Robot Bridge - Raspberry Pi 5')
-    parser.add_argument('--arduino-port', default='/dev/ttyUSB0', help='Arduino serial port')
+    parser.add_argument(
+        '--arduino-port',
+        default=','.join(DEFAULT_ARDUINO_PORTS),
+        help='Arduino serial port or comma-separated fallback list',
+    )
     parser.add_argument('--host', default='0.0.0.0', help='WebSocket host')
     parser.add_argument('--port', type=int, default=8765, help='WebSocket port')
     parser.add_argument('--camera', default='0', help='Webcam index or path, e.g. 0 or /dev/video0')

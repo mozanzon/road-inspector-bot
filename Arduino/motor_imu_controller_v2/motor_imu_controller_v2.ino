@@ -22,14 +22,14 @@ const int M1_L_EN = 8;
 // ── RIGHT Motor (M2) - uses PWM pins on Mega for speed control
 const int RIGHT_RPWM = 44;
 const int RIGHT_LPWM = 45;
-const int RIGHT_R_EN = 40;
-const int RIGHT_L_EN = 41;
+const int RIGHT_R_EN = 46;
+const int RIGHT_L_EN = 47;
 
 // ── PLOTTER Motor (M3) - max-speed on/off only
 const int PLOTTER_RPWM = 38;
 const int PLOTTER_LPWM = 39;
-const int PLOTTER_R_EN = 46;
-const int PLOTTER_L_EN = 47;
+const int PLOTTER_R_EN = 40;
+const int PLOTTER_L_EN = 41;
 
 const int RAMP_STEPS = 50;
 const unsigned long RAMP_TIME = 800;

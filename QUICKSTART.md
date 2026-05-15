@@ -4,14 +4,14 @@ Complete robot control system with Arduino, Raspberry Pi 5, and React frontend.
 
 ## What's Included
 
-### 1. Arduino Code (`robot_control_v2.ino`)
+### 1. Arduino Code (`Arduino/motor_imu_controller_v2/motor_imu_controller_v2.ino`)
 - **Features**: 
-  - Dual motor control (L298N driver)
-  - HMC5883 compass sensor
+  - Differential drive motor control
+  - QMC5883L compass sensor
   - Dual encoders for odometry
   - Interrupt-based encoder counting
   - Serial command protocol
-- **Commands**: MOTOR, FORWARD, BACKWARD, LEFT, RIGHT, STOP, STATUS
+- **Commands**: CMD, FORWARD, BACKWARD, TURN_LEFT_90, TURN_RIGHT_90, STOP, STATUS
 
 ### 2. Raspberry Pi Bridge (`robot_bridge_rpi5.py`)
 - **Components**:
@@ -29,7 +29,7 @@ Complete robot control system with Arduino, Raspberry Pi 5, and React frontend.
 
 ### 4. Documentation
 - `PROTOCOL_DOCUMENTATION.md`: Detailed message formats
-- `pi_tcp_bridge/SETUP_GUIDE.md`: Raspberry Pi 5 installation steps
+- `pi_bridge/SETUP_GUIDE.md`: Raspberry Pi 5 installation steps
 
 ---
 
@@ -45,7 +45,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 # Run bridge
-python robot_bridge_rpi5.py --arduino-port /dev/ttyUSB0 --host 0.0.0.0
+python robot_bridge_rpi5.py --arduino-port /dev/ttyAMA10,/dev/ttyAMA0,/dev/ttyUSB0 --host 0.0.0.0
 ```
 
 ### In React App
@@ -73,7 +73,7 @@ export function MyComponent() {
 
 ## Pin Layout
 
-### Arduino (ATmega328/Arduino Uno)
+### Arduino Mega
 
 ```
 Left Motor (M1):
@@ -83,10 +83,10 @@ Left Motor (M1):
   PIN 8  - Enable
 
 Right Motor (M2):
-  PIN 9  - PWM Output (RPWM)
-  PIN 10 - PWM Output (LPWM)
-  PIN 11 - Enable
-  PIN 12 - Enable
+  PIN 44 - PWM Output (RPWM)
+  PIN 45 - PWM Output (LPWM)
+  PIN 46 - Enable
+  PIN 47 - Enable
 
 Encoders:
   PIN 2  - Encoder 1 Channel A (Interrupt)
@@ -264,7 +264,7 @@ robotBridge.on('detections', (detections) => {
 
 ## Next Steps
 
-1. **Upload Arduino code** → `robot_control_v2.ino`
+1. **Upload Arduino code** → `Arduino/motor_imu_controller_v2/motor_imu_controller_v2.ino`
 2. **Setup Raspberry Pi** → Follow `SETUP_GUIDE.md`
 3. **Start bridge** → `python robot_bridge_rpi5.py`
 4. **Use in React** → Import `useRobotBridge` hook
@@ -275,14 +275,14 @@ robotBridge.on('detections', (detections) => {
 ## File Structure
 
 ```
-robot_inspector_bot/
-├── motor_compass_controller/
-│   ├── motor_compass_controller.ino (original)
-│   └── robot_control_v2.ino         (NEW)
-├── pi_tcp_bridge/
-│   ├── robot_bridge_rpi5.py         (NEW)
-│   ├── requirements.txt             (NEW)
-│   └── SETUP_GUIDE.md              (NEW)
+road_inspector_bot/
+├── Arduino/
+│   └── motor_imu_controller_v2/
+│       └── motor_imu_controller_v2.ino
+├── pi_bridge/
+│   ├── robot_bridge_rpi5.py
+│   ├── requirements.txt
+│   └── SETUP_GUIDE.md
 ├── RoboScanV2/
 │   └── src/
 │       ├── services/
@@ -291,7 +291,7 @@ robot_inspector_bot/
 │       │   └── useRobotBridge.ts    (NEW)
 │       └── components/
 │           └── RobotDashboard.tsx   (NEW)
-└── PROTOCOL_DOCUMENTATION.md       (NEW)
+└── PROTOCOL_DOCUMENTATION.md
 ```
 
 ---

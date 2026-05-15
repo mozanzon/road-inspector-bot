@@ -19,3 +19,8 @@
 !QUICKSTART.md
 !PROTOCOL_DOCUMENTATION.md
 !DELIVERY_SUMMARY.md
+!PROJECT_MEMORY.md
+
+# Allow tests
+!tests/
+!tests/**
