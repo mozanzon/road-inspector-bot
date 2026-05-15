@@ -24,3 +24,8 @@
 # Allow tests
 !tests/
 !tests/**
+
+# Ignore generated Python caches
+__pycache__/
+**/__pycache__/
+*.pyc

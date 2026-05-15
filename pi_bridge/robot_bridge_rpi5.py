@@ -411,7 +411,7 @@ class RobotBridge:
         logger.info("Robot Bridge initialized successfully")
         return True
     
-    async def handle_client(self, websocket, path):
+    async def handle_client(self, websocket, path=None):
         """Handle WebSocket client connection"""
         self.clients.add(websocket)
         logger.info(f"Client connected. Total: {len(self.clients)}")
