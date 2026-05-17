@@ -28,6 +28,13 @@ STATUS|heading=...|yaw=...|odom_x=...|odom_y=...|odom_theta=...|lat=...|lng=...|
 
 React talks to the Pi bridge over WebSocket on port `8765`.
 
+Bridge telemetry note:
+
+- `pi_bridge/robot_bridge_rpi5.py` must broadcast the latest parsed sensor packet, not simply the latest raw serial line.
+- Plain Arduino text lines such as `Ready.`, `Already stopped.`, ACKs, and command messages can parse as `{}`. If those are forwarded as `arduino`, the camera stream can still work while the UI sensor cards show no data.
+- The bridge now uses `ArduinoReader.get_latest_sensor_data()` to skip non-sensor serial lines and keep forwarding the newest `status`, `compass`, or `encoder` packet.
+- Regression coverage is in `tests/test_robot_bridge_ports.py` for parsing `STATUS|...` packets and skipping plain text serial lines.
+
 The Pi bridge tries Arduino serial ports in this default order:
 
 ```text
